@@ -249,7 +249,7 @@ function montarEntrada(cartao) {
   raiz.append(h('div', { class: 'entrada' }, hero,
     h('div', { class: 'entrada-form' }, h('div', { class: 'centro' },
       h('div', { class: 'logo' }, h('img', { src: 'logo.png', alt: 'Help – Loja de Crédito' })), cartao))));
-  iniciarRede(canvas, { marca: 'img/marca-rc.png' });
+  iniciarRede(canvas, { marca: 'img/marca-rc.png?v=2' });
 }
 
 async function entrar(usuarioBruto, senha) {
