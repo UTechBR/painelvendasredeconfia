@@ -7,7 +7,9 @@
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
 <title>Painel de Leads – Rede Confia</title>
-<link rel="icon" href="logo.png">
+<link rel="icon" type="image/png" href="img/icone.png">
+<link rel="apple-touch-icon" href="img/icone.png">
+<meta name="theme-color" content="#8a0a0e">
 <style>
 :root{
   --laranja:#ff8202; --laranja-escuro:#9a4d00; --tinta:#1f1300; --texto:#26221c; --suave:#6b6257;
@@ -21,9 +23,11 @@ body{margin:0;background:var(--fundo);color:var(--texto);font:15px/1.45 system-u
 h1,h2,h3{margin:0 0 10px;line-height:1.25}
 h2{font-size:18px} h3{font-size:15px}
 button,input,select,textarea{font:inherit;color:inherit}
-.topo{background:var(--laranja);display:flex;align-items:center;gap:16px;padding:6px 16px;flex-wrap:wrap}
-.topo img{height:52px;display:block}
-.topo .quem{margin-left:auto;color:var(--tinta);display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px}
+.topo{background:linear-gradient(100deg,#6f0407 0%,#a30c11 60%,#b8141a 100%);display:flex;align-items:center;gap:14px;padding:8px 16px;flex-wrap:wrap;border-bottom:3px solid var(--laranja)}
+.topo img{display:block}
+.topo .topo-rc{height:40px}
+.topo .topo-help{height:34px;border-radius:8px;box-shadow:0 0 0 1px rgba(255,255,255,.25)}
+.topo .quem{margin-left:auto;color:#fdeee2;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px}
 .topo .quem b{font-weight:600}
 nav.abas{background:#fff;border-bottom:1px solid var(--linha);display:flex;gap:4px;padding:0 12px;overflow-x:auto}
 nav.abas button{background:none;border:0;border-bottom:3px solid transparent;padding:12px 14px;cursor:pointer;color:var(--suave);font-weight:600;white-space:nowrap}
@@ -96,6 +100,21 @@ dl.dados dt{color:var(--suave)} dl.dados dd{margin:0;word-break:break-word}
 .rodape-dist td{font-weight:700;background:#faf7f2}
 .senha{font:700 20px/1 ui-monospace,Consolas,monospace;background:#fff8ef;border:1px dashed var(--laranja);padding:10px 14px;border-radius:8px;display:inline-block;margin:6px 0;letter-spacing:.5px;user-select:all}
 .carregando{padding:40px;text-align:center;color:var(--suave)}
+/* tela de entrada */
+.entrada{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(340px,.85fr);min-height:100vh}
+.hero{position:relative;overflow:hidden;color:#fbe9dc;
+  background:radial-gradient(110% 80% at 0% 100%,rgba(247,222,205,.45),rgba(247,222,205,0) 48%),linear-gradient(135deg,#a80d12 0%,#7c0508 55%,#560306 100%)}
+.hero canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:pan-y;cursor:crosshair}
+.hero-logo{position:absolute;left:clamp(20px,4vw,48px);top:clamp(18px,4vw,44px);width:clamp(120px,15vw,210px);pointer-events:none}
+.hero-dica{position:absolute;left:clamp(20px,4vw,48px);bottom:clamp(16px,3vw,32px);margin:0;font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.85;pointer-events:none}
+.entrada-form{display:flex;align-items:center;justify-content:center;padding:32px 20px}
+.entrada-form .centro{margin:0;width:100%;max-width:400px;padding:0}
+@media(max-width:860px){
+  .entrada{grid-template-columns:1fr;grid-template-rows:minmax(250px,40vh) auto;min-height:100vh}
+  .entrada-form{align-items:flex-start;padding:20px 16px 32px}
+  .hero-dica{font-size:11px}
+}
+
 </style>
 </head>
 <body>

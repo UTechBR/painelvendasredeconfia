@@ -5,6 +5,7 @@
 import { firebaseConfig } from './firebase-config.js';
 import * as L from './logic.js';
 import { lerXlsx } from './xlsx.js';
+import { iniciarRede } from './fundo.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {
   initializeAuth, browserSessionPersistence, inMemoryPersistence, signInWithEmailAndPassword,
@@ -234,8 +235,21 @@ function telaLogin(mensagem = '') {
   },
   campo('Usuário', usuario), campo('Senha', senha), erro, h('div', { style: 'margin-top:16px' }, botao),
   h('p', { class: 'dica', text: 'Esqueceu a senha? Peça para o seu supervisor redefinir.' }));
-  raiz.append(h('div', { class: 'centro' }, h('div', { class: 'logo' }, h('img', { src: 'logo.png', alt: 'Help – Loja de Crédito' })), h('div', { class: 'cartao' }, form)));
+  montarEntrada(h('div', { class: 'cartao' }, form));
   usuario.focus();
+}
+
+// Tela de entrada: à esquerda a rede animada da Rede Confia; à direita o cartão (login ou primeiro acesso).
+function montarEntrada(cartao) {
+  const canvas = h('canvas', { 'aria-hidden': 'true' });
+  const hero = h('section', { class: 'hero', 'aria-label': 'Rede Confia' },
+    canvas,
+    h('img', { class: 'hero-logo', src: 'img/logo-rc.png', alt: 'Rede Confia' }),
+    h('p', { class: 'hero-dica', text: 'Toque na tela e envie leads para as lojas' }));
+  raiz.append(h('div', { class: 'entrada' }, hero,
+    h('div', { class: 'entrada-form' }, h('div', { class: 'centro' },
+      h('div', { class: 'logo' }, h('img', { src: 'logo.png', alt: 'Help – Loja de Crédito' })), cartao))));
+  iniciarRede(canvas, { marca: 'img/marca-rc.png' });
 }
 
 async function entrar(usuarioBruto, senha) {
@@ -295,8 +309,7 @@ function telaPrimeiroAcesso() {
   campo('Seu nome', nome), campo('Usuário', usuario), campo('Senha', senha, 'Mínimo de 8 caracteres, com letras e números.'), campo('Repita a senha', senha2), erro,
   h('div', { style: 'margin-top:16px' }, botao));
   function falha(msg) { erro.textContent = msg; erro.hidden = false; }
-  raiz.append(h('div', { class: 'centro' }, h('div', { class: 'logo' }, h('img', { src: 'logo.png', alt: 'Help – Loja de Crédito' })),
-    h('div', { class: 'cartao' }, h('h2', { text: 'Primeiro acesso' }), h('p', { class: 'dica', text: 'Crie agora o administrador do painel. Esta tela só aparece uma vez.' }), form)));
+  montarEntrada(h('div', { class: 'cartao' }, h('h2', { text: 'Primeiro acesso' }), h('p', { class: 'dica', text: 'Crie agora o administrador do painel. Esta tela só aparece uma vez.' }), form));
 }
 
 async function iniciarSessao(user) {
@@ -495,7 +508,7 @@ function telaApp() {
   limpar(raiz);
   const abas = abasDoPerfil();
   if (!abas.includes(estado.aba)) estado.aba = abas[0];
-  raiz.append(h('div', { class: 'topo' }, h('img', { src: 'logo.png', alt: 'Help – Loja de Crédito' }),
+  raiz.append(h('div', { class: 'topo' }, h('img', { class: 'topo-rc', src: 'img/logo-rc.png', alt: 'Rede Confia' }), h('img', { class: 'topo-help', src: 'logo.png', alt: 'Help – Loja de Crédito' }),
     h('div', { class: 'quem' },
       h('span', {}, h('b', { text: estado.me.nome }), h('span', { id: 'quem-cargo', text: textoQuem() })),
       h('button', { class: 'btn sec peq', onclick: abrirAlterarSenha, text: 'Alterar senha' }),
