@@ -1,11 +1,6 @@
-// Configuração do projeto Firebase (cole aqui os dados do SEU projeto).
-// Estes dados identificam o projeto e podem ficar no site: quem protege os dados
-// são as regras do Firestore (arquivo firestore.rules) e o login.
-// Onde achar: Firebase > Configurações do projeto (engrenagem) > Seus apps > Config.
-
 export const firebaseConfig = {
-  apiKey: 'COLE_AQUI',
-  authDomain: 'COLE_AQUI',
-  projectId: 'COLE_AQUI',
-  appId: 'COLE_AQUI',
+  apiKey: 'AIzaSyAFFoj-5A08XBIBsFXbBX7I5ualypI85bw',
+  authDomain: 'painel-help.firebaseapp.com',
+  projectId: 'painel-help',
+  appId: '1:806187238644:web:b2858fd2fff5cc95aa0aa1',
 };
