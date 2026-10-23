@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Painel de Leads – Rede Confia</title>
+<link rel="icon" href="logo.png">
+<style>
+:root{
+  --laranja:#ff8202; --laranja-escuro:#9a4d00; --tinta:#1f1300; --texto:#26221c; --suave:#6b6257;
+  --fundo:#f6f3ee; --cartao:#fff; --linha:#e4ddd2; --ok:#14733a; --ok-fundo:#dcf3e4;
+  --erro:#b3261e; --erro-fundo:#fbe3e0; --aviso-fundo:#fff1d6; --azul:#1b5fb4; --azul-fundo:#e2edfb;
+  --raio:10px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--fundo);color:var(--texto);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+h1,h2,h3{margin:0 0 10px;line-height:1.25}
+h2{font-size:18px} h3{font-size:15px}
+button,input,select,textarea{font:inherit;color:inherit}
+.topo{background:var(--laranja);display:flex;align-items:center;gap:16px;padding:6px 16px;flex-wrap:wrap}
+.topo img{height:52px;display:block}
+.topo .quem{margin-left:auto;color:var(--tinta);display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px}
+.topo .quem b{font-weight:600}
+nav.abas{background:#fff;border-bottom:1px solid var(--linha);display:flex;gap:4px;padding:0 12px;overflow-x:auto}
+nav.abas button{background:none;border:0;border-bottom:3px solid transparent;padding:12px 14px;cursor:pointer;color:var(--suave);font-weight:600;white-space:nowrap}
+nav.abas button[aria-current=true]{color:var(--tinta);border-bottom-color:var(--laranja)}
+main{max-width:1200px;margin:0 auto;padding:16px}
+.cartao{background:var(--cartao);border:1px solid var(--linha);border-radius:var(--raio);padding:16px;margin-bottom:16px}
+.btn{background:var(--laranja);color:var(--tinta);border:0;border-radius:8px;padding:9px 16px;font-weight:700;cursor:pointer}
+.btn:hover{filter:brightness(.95)} .btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sec{background:#fff;border:1px solid var(--linha);font-weight:600}
+.btn.peq{padding:5px 10px;font-size:13px}
+.btn.perigo{background:var(--erro);color:#fff}
+.link{background:none;border:0;padding:0;color:var(--tinta);text-decoration:underline;cursor:pointer;font-size:inherit}
+:focus-visible{outline:3px solid var(--azul);outline-offset:2px}
+label{display:block;font-weight:600;margin:12px 0 4px;font-size:14px}
+input,select,textarea{width:100%;border:1px solid #b9b0a2;border-radius:8px;padding:9px 10px;background:#fff}
+textarea{min-height:70px;resize:vertical}
+.linha{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.linha>*{flex:1 1 160px}
+.linha>.fixo{flex:0 0 auto}
+.dica{color:var(--suave);font-size:13px;margin:4px 0 0}
+.erro{background:var(--erro-fundo);color:var(--erro);border-radius:8px;padding:8px 12px;margin:10px 0;font-weight:600}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+.card{background:#fff;border:1px solid var(--linha);border-radius:var(--raio);padding:10px 12px;text-align:left;cursor:default}
+button.card{cursor:pointer}
+button.card[aria-pressed=true]{border:2px solid var(--laranja);padding:9px 11px;background:#fff8ef}
+.card small{display:block;color:var(--suave);font-weight:600}
+.card strong{font-size:24px}
+.tabela-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--linha);vertical-align:middle}
+th{font-size:13px;color:var(--suave);white-space:nowrap}
+td.num,th.num{text-align:right;white-space:nowrap}
+tbody tr.clic{cursor:pointer} tbody tr.clic:hover{background:#fff8ef}
+.tag{display:inline-block;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:700;background:#eee;white-space:nowrap}
+.tag.novo{background:var(--azul-fundo);color:var(--azul)}
+.tag.atendimento,.tag.proposta{background:var(--aviso-fundo);color:#7a4a00}
+.tag.venda{background:var(--ok-fundo);color:var(--ok)}
+.tag.perdido{background:var(--erro-fundo);color:var(--erro)}
+.tag.prod{background:#efe9df;color:var(--tinta)}
+.tag.alerta{background:var(--aviso-fundo);color:#7a4a00}
+.barra{display:inline-block;width:70px;height:8px;background:#eee;border-radius:4px;vertical-align:middle;margin-left:8px;overflow:hidden}
+.barra i{display:block;height:100%;background:var(--laranja)}
+td.melhor{background:var(--ok-fundo);font-weight:700}
+.vazio{color:var(--suave);padding:24px;text-align:center}
+.fundo-modal{position:fixed;inset:0;background:rgba(31,19,0,.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px;z-index:10}
+.modal{background:#fff;border-radius:12px;width:100%;max-width:560px;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3)}
+.modal.largo{max-width:900px}
+.modal header h2{margin:0}
+.modal header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px}
+.modal .acoes{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
+.status-opcoes{display:flex;gap:8px;flex-wrap:wrap}
+.status-opcoes button{border:2px solid var(--linha);background:#fff;border-radius:8px;padding:7px 12px;font-weight:600;cursor:pointer}
+.status-opcoes button[aria-pressed=true]{border-color:var(--laranja);background:#fff3e2}
+.indic{border:1px dashed var(--laranja);background:#fffaf2;border-radius:10px;padding:12px;margin-top:14px}
+.indic .item{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:8px;margin-top:8px}
+.indic .item small{grid-column:1/-1;color:var(--erro);font-weight:600}
+@media(max-width:560px){.indic .item{grid-template-columns:1fr}}
+dl.dados{display:grid;grid-template-columns:130px 1fr;gap:4px 12px;margin:10px 0}
+dl.dados dt{color:var(--suave)} dl.dados dd{margin:0;word-break:break-word}
+.hist{font-size:13px;color:var(--suave);margin:8px 0 0;padding-left:18px}
+#avisos{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:30;display:flex;flex-direction:column;gap:8px;align-items:center;max-width:92vw}
+.toast{background:var(--tinta);color:#fff;padding:10px 18px;border-radius:99px}
+.toast.erro{background:var(--erro)}
+.centro{max-width:400px;margin:8vh auto;padding:0 16px}
+.centro .logo{background:var(--laranja);border-radius:12px 12px 0 0;text-align:center;padding:10px}
+.centro .logo img{height:90px}
+.centro .cartao{border-radius:0 0 12px 12px;margin:0}
+.dist td input{width:80px;text-align:right}
+.dist td input.acima{border-color:var(--erro);background:var(--erro-fundo)}
+.rodape-dist td{font-weight:700;background:#faf7f2}
+.senha{font:700 20px/1 ui-monospace,Consolas,monospace;background:#fff8ef;border:1px dashed var(--laranja);padding:10px 14px;border-radius:8px;display:inline-block;margin:6px 0;letter-spacing:.5px;user-select:all}
+.carregando{padding:40px;text-align:center;color:var(--suave)}
+</style>
+</head>
+<body>
+<div id="app"><p class="carregando">Carregando…</p></div>
+<div id="avisos" aria-live="polite"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
