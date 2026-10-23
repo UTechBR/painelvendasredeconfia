@@ -3,7 +3,7 @@
 
 export const PAPEIS = {
   admin: 'Administrador',
-  diretor: 'Diretor',
+  diretor: 'Gerente Geral',
   supervisor: 'Supervisor',
   consultor: 'Consultor',
 };
@@ -17,7 +17,7 @@ export const STATUS = [
 ];
 
 export const TOTAL_INDICACOES = 3;
-export const MAX_EXTRAS = 12;
+export const MAX_EXTRAS = 18;
 
 // ---------- texto ----------
 export function semAcento(s) {
@@ -133,8 +133,10 @@ export function idLead(produtoId, cpf) {
   return `${produtoId}_${cpf}`;
 }
 
+const normCab = (c) => semAcento(limparTexto(c)).toLowerCase().replace(/_+/g, ' ').replace(/\s+/g, ' ').trim();
+
 export function detectarColunas(cabecalho) {
-  const n = cabecalho.map((c) => semAcento(limparTexto(c)).toLowerCase());
+  const n = cabecalho.map(normCab);
   const usados = new Set();
   const achar = (...regexes) => {
     for (const re of regexes) {
@@ -143,11 +145,87 @@ export function detectarColunas(cabecalho) {
     }
     return -1;
   };
-  const cpf = achar(/\bcpf\b/);
-  const nome = achar(/^(nome|nome completo|nome do cliente|cliente)$/, /^nome/, /cliente/);
-  const tel = achar(/^(telefone|celular|fone|whatsapp|telefone hot)$/, /(telefone|fone|celular|whats)/);
+  const cpf = achar(/^cpf$/, /\bcpf\b/, /cpf/);
+  // "Nome Loja", "Nome da mãe" etc. não são o nome do cliente
+  const nome = achar(/^(nome|nome completo|nome do cliente|nome cliente|cliente)$/, /^nome(?!.*(loja|mae|pai|empresa|entidade|usuario))/, /^(?!.*(cod|codigo|numero)).*cliente/);
+  const tel = achar(/^(telefone|celular|fone|fone ?1|whatsapp|telefone hot|telefone celular)$/, /(telefone|fone|celular|whats)/);
   const extras = n.map((c, i) => i).filter((i) => !usados.has(i) && n[i] !== '');
   return { nome, cpf, tel, extras };
+}
+
+// ---------- layouts de cada produto ----------
+// [coluna (sem acento, minúscula, "_" vira espaço), rótulo na ficha, formato]
+export const PERFIS_PRODUTO = {
+  clt: [
+    ['data nascimento', 'Data de nascimento', 'data'], ['matricula', 'Matrícula'], ['prazo', 'Prazo (meses)'],
+    ['parcela', 'Parcela', 'dinheiro'], ['valor liberado', 'Valor liberado', 'dinheiro'], ['valido ate', 'Válido até', 'datahora'],
+    ['possui whatsapp', 'Possui WhatsApp'],
+  ],
+  cnc: [
+    ['produto', 'Oferta'], ['matricula', 'Matrícula'], ['entidade nome', 'Entidade'], ['situacao funcional', 'Situação funcional'], ['uf beneficio', 'UF do benefício'],
+    ['renda liquida', 'Renda líquida', 'dinheiro'], ['margem consignado', 'Margem consignado', 'dinheiro'], ['margem cartao', 'Margem cartão', 'dinheiro'],
+    ['valor maximo', 'Valor máximo', 'dinheiro'], ['valor liquido', 'Valor líquido', 'dinheiro'], ['parcela', 'Prazo (parcelas)'],
+    ['valor parcela', 'Valor da parcela', 'dinheiro'], ['taxa', 'Taxa'], ['primeiro vencimento', '1º vencimento', 'data'], ['zap', 'WhatsApp'],
+  ],
+  'saque-complementar': [
+    ['logo', 'Convênio'], ['matricula', 'Matrícula'], ['especie beneficio', 'Espécie do benefício'], ['cidade', 'Cidade'], ['uf', 'UF'],
+    ['status conta', 'Status da conta'], ['utilizacao conta', 'Utilização da conta'], ['saldo conta', 'Saldo da conta'], ['faixa limite', 'Faixa de limite'],
+    ['apto conta', 'Apto'], ['vlr limite conta', 'Limite da conta', 'dinheiro'], ['vlr limite disponivel saque', 'Disponível para saque', 'dinheiro'],
+    ['vlr limite disponivel total', 'Disponível total', 'dinheiro'], ['fone2', 'Telefone 2'], ['fone3', 'Telefone 3'],
+  ],
+};
+
+// Arquivos que passaram por programas que erram a acentuação ("3Âº" em vez de "3º").
+export function consertarTexto(s) {
+  const t = String(s ?? '');
+  if (!/[ÂÃ]/.test(t)) return t;
+  try {
+    const bytes = Uint8Array.from(t, (c) => { const k = c.charCodeAt(0); if (k > 255) throw new Error('fora'); return k; });
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch { return t; }
+}
+
+function numeroBr(t) {
+  const x = /,\d{1,2}$/.test(t) ? t.replace(/\./g, '').replace(',', '.') : t;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
+const dois = (n) => String(n).padStart(2, '0');
+
+export function formatarExtra(valor, formato) {
+  const t = consertarTexto(limparTexto(valor)).slice(0, 200);
+  if (!t) return '';
+  if (formato === 'dinheiro') {
+    const n = numeroBr(t);
+    return n === null ? t : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }).replace(/\u00a0/g, ' ');
+  }
+  if (formato === 'data' || formato === 'datahora') {
+    const n = Number(t);
+    if (Number.isFinite(n) && n > 20000 && n < 80000) { // data do Excel (dias desde 1899-12-30)
+      const ms = Math.round((n - 25569) * 86400000);
+      const d = new Date(ms);
+      let txt = `${dois(d.getUTCDate())}/${dois(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}`;
+      if (formato === 'datahora' && n % 1 > 0.0007) txt += ` ${dois(d.getUTCHours())}:${dois(d.getUTCMinutes())}`;
+      return txt;
+    }
+    const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+    if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+  }
+  return t;
+}
+
+// CNC: o mesmo CPF pode vir em várias linhas, uma por oferta. Une tudo no mesmo lead.
+function textoOferta(linha, cabNorm) {
+  const v = (k) => linha[cabNorm.indexOf(k)];
+  const produto = limparTexto(consertarTexto(v('produto'))).slice(0, 40);
+  const partes = [];
+  const max = formatarExtra(v('valor maximo'), 'dinheiro');
+  if (max) partes.push(`máx ${max}`);
+  const par = limparTexto(v('parcela'));
+  const vp = formatarExtra(v('valor parcela'), 'dinheiro');
+  if (par && vp) partes.push(`${par}x ${vp}`);
+  return `${produto}${partes.length ? ` (${partes.join(', ')})` : ''}`;
 }
 
 export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = new Set() }) {
@@ -157,34 +235,55 @@ export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = 
   if (col.nome < 0 || col.cpf < 0) {
     throw new Error('Não encontrei as colunas NOME e CPF na primeira linha da planilha.');
   }
-  const extrasUsados = col.extras.slice(0, MAX_EXTRAS);
+  const perfil = PERFIS_PRODUTO[produtoId];
+  const cabNorm = cab.map(normCab);
+  // produto conhecido: guarda só as colunas úteis dele, com nome e formato amigáveis
+  const colunasPerfil = perfil ? perfil.map(([chave, rotulo, formato]) => ({ idx: cabNorm.indexOf(chave), rotulo, formato })).filter((c) => c.idx >= 0 && c.idx !== col.nome && c.idx !== col.cpf && c.idx !== col.tel) : [];
+  const extrasUsados = colunasPerfil.length ? colunasPerfil : col.extras.slice(0, MAX_EXTRAS).map((idx) => ({ idx, rotulo: limparTexto(cab[idx]).slice(0, 40), formato: null }));
   const leads = [];
   const ignorados = [];
   const vistos = new Set();
-  const resumo = { lidas: 0, validas: 0, cpfInvalido: 0, semNome: 0, duplicadasNoArquivo: 0, jaExistem: 0 };
+  const resumo = { lidas: 0, validas: 0, cpfInvalido: 0, semNome: 0, duplicadasNoArquivo: 0, jaExistem: 0, ofertasUnidas: 0 };
+  const porId = new Map();
 
   for (let i = 1; i < linhas.length; i++) {
     const l = linhas[i];
-    resumo.lidas++;
     const nome = limparTexto(l[col.nome]).slice(0, 120);
     const cpf = normalizarCpf(l[col.cpf]);
+    if (!nome && !cpf) continue; // linha em branco (ou rodapé) no fim da planilha
+    resumo.lidas++;
     if (nome.length < 2) { resumo.semNome++; ignorados.push({ linha: i + 1, motivo: 'sem nome' }); continue; }
     if (!cpfValido(cpf)) { resumo.cpfInvalido++; ignorados.push({ linha: i + 1, motivo: 'CPF inválido' }); continue; }
     const id = idLead(produtoId, cpf);
+    if (vistos.has(id) && produtoId === 'cnc' && porId.has(id) && col.nome >= 0 && cabNorm.includes('produto')) {
+      const base = porId.get(id);
+      const outras = [base.extras['Outras ofertas'], textoOferta(l, cabNorm)].filter(Boolean).join(' | ');
+      base.extras['Outras ofertas'] = outras.slice(0, 200);
+      resumo.ofertasUnidas++;
+      continue;
+    }
     if (vistos.has(id)) { resumo.duplicadasNoArquivo++; ignorados.push({ linha: i + 1, motivo: 'CPF repetido no arquivo' }); continue; }
     vistos.add(id);
     if (existentes.has(id)) { resumo.jaExistem++; ignorados.push({ linha: i + 1, motivo: 'já existe nesse produto' }); continue; }
     const extras = {};
-    for (const idx of extrasUsados) {
-      const v = limparTexto(l[idx]).slice(0, 200);
-      if (v) extras[limparTexto(cab[idx]).slice(0, 40)] = v;
+    for (const { idx, rotulo, formato } of extrasUsados) {
+      const v = formatarExtra(l[idx], formato);
+      if (!v) continue;
+      if (/^Telefone \d$/.test(rotulo) && /^0*$/.test(soDigitos(v))) continue; // "0" = sem telefone
+      extras[rotulo] = v;
     }
-    leads.push({
+    // telefone que não dá para discar (sem DDD, por exemplo) fica visível na ficha
+    const telBruto = col.tel >= 0 ? soDigitos(l[col.tel]) : '';
+    const telefone = col.tel >= 0 ? normalizarTelefone(l[col.tel]) : '';
+    if (telBruto && !/^0+$/.test(telBruto) && !telefone) extras['Telefone (sem DDD)'] = telBruto;
+    const lead = {
       id, nome, cpf,
-      telefone: col.tel >= 0 ? normalizarTelefone(l[col.tel]) : '',
+      telefone,
       produtoId, loteId, origem, extras,
       ord: leads.length,
-    });
+    };
+    leads.push(lead);
+    porId.set(id, lead);
     resumo.validas++;
   }
   return { colunas: { nome: cab[col.nome], cpf: cab[col.cpf], tel: col.tel >= 0 ? cab[col.tel] : null, extras: extrasUsados.length }, leads, ignorados, resumo };

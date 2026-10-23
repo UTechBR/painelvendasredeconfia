@@ -1035,6 +1035,7 @@ function viewImportar() {
             rs.cpfInvalido ? h('li', { text: `${rs.cpfInvalido} com CPF inválido (ignorados)` }) : null,
             rs.semNome ? h('li', { text: `${rs.semNome} sem nome (ignorados)` }) : null,
             rs.duplicadasNoArquivo ? h('li', { text: `${rs.duplicadasNoArquivo} CPF repetido no arquivo (ignorados)` }) : null,
+            rs.ofertasUnidas ? h('li', { text: `${rs.ofertasUnidas} linha(s) com CPF repetido: as ofertas foram unidas no mesmo lead` }) : null,
             rs.jaExistem ? h('li', { text: `${rs.jaExistem} já existem nesse produto (ignorados)` }) : null),
           r.ignorados.length ? h('details', {}, h('summary', { text: 'Ver linhas ignoradas' }), h('ul', {}, r.ignorados.slice(0, 50).map((i) => h('li', { text: `Linha ${i.linha}: ${i.motivo}` })), r.ignorados.length > 50 ? h('li', { text: `… e mais ${r.ignorados.length - 50}` }) : null)) : null,
           h('div', { style: 'display:flex;justify-content:flex-end;margin-top:12px' },
