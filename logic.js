@@ -540,3 +540,34 @@ export function contarStatus(leads) {
   for (const l of leads) if (l.status in r) r[l.status]++;
   return r;
 }
+
+// ---------- distribuição pendente (leads da loja ainda sem consultor) ----------
+export const DIAS_ALERTA_VERMELHO = 2;
+const msDe = (t) => (typeof t === 'number' ? t : typeof t?.toMillis === 'function' ? t.toMillis() : null);
+
+export function plural(n, singular, pluralTexto) { return `${n} ${n === 1 ? singular : pluralTexto}`; }
+
+// Para cada loja, quantos leads já chegaram mas ainda não foram passados a um consultor,
+// e há quantos dias o mais antigo está esperando. Mais atrasadas primeiro.
+// "Desde" = quando o Gerente Geral enviou o lead à loja; se faltar, a data de criação.
+export function pendenciasDistribuicao(leads, { agora = Date.now() } = {}) {
+  const porLoja = new Map();
+  for (const l of leads) {
+    if (l.indicacao || !l.lojaId || l.consultorId) continue;
+    // enviadoEm existe mas ainda é nulo = gravação acabando de sair daqui: conta como "agora"
+    const ms = l.enviadoEm === undefined ? (msDe(l.criadoEm) ?? agora) : (msDe(l.enviadoEm) ?? agora);
+    const p = porLoja.get(l.lojaId);
+    if (!p) porLoja.set(l.lojaId, { lojaId: l.lojaId, qtd: 1, desde: ms });
+    else { p.qtd += 1; if (ms < p.desde) p.desde = ms; }
+  }
+  return [...porLoja.values()].map((p) => {
+    const dias = Math.max(0, Math.floor((agora - p.desde) / MS_DIA));
+    return { ...p, dias, nivel: dias >= DIAS_ALERTA_VERMELHO ? 'vermelho' : 'amarelo' };
+  }).sort((a, b) => a.desde - b.desde || b.qtd - a.qtd);
+}
+
+export function textoPendencia(qtd, dias) {
+  const leads = `${plural(qtd, 'lead', 'leads')} sem consultor`;
+  if (dias <= 0) return `${leads}, ${qtd === 1 ? 'chegou' : 'chegaram'} hoje`;
+  return `${leads}, ${qtd === 1 ? 'parado' : 'parados'} há ${plural(dias, 'dia', 'dias')}`;
+}

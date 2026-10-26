@@ -31,6 +31,7 @@ const estado = {
   dist: { modo: 'lojas', loja: '', lote: '', plano: {} },
   rel: { produto: '', lote: '' },
   rank: { produto: '', periodo: 'mes', modo: 'lojas' },
+  cobranca: null, cobrancas: new Map(),
   roteiros: [], rot: { id: null, pagina: 1, busca: '', paginas: null, chave: '', carregando: false, erro: false },
   desinscrever: [], modais: 0, renderPendente: false, timerInatividade: null,
 };
@@ -368,7 +369,8 @@ async function sair(msg = '') {
 
 function encerrarDados() {
   clearInterval(estado.timerLembretes); estado.timerLembretes = null;
-  document.querySelectorAll('#avisos .lembrete').forEach((e) => e.remove());
+  document.querySelectorAll('#avisos .lembrete, #avisos .toast').forEach((e) => e.remove());
+  estado.cobranca = null; estado.cobrancas = new Map();
   estado.desinscrever.forEach((f) => f());
   estado.desinscrever = [];
   estado.leadsMap = new Map();
@@ -442,10 +444,10 @@ function abrirAlterarSenha() {
 }
 
 // ---------- dados em tempo real ----------
-function ouvir(consulta, aoReceber) {
+function ouvir(consulta, aoReceber, silencioso = false) {
   const cancelar = onSnapshot(consulta, aoReceber, (err) => {
     console.error('leitura', err?.code || err);
-    aviso('Sem permissão ou sem conexão para carregar alguns dados.', 'erro');
+    if (!silencioso) aviso('Sem permissão ou sem conexão para carregar alguns dados.', 'erro');
   });
   estado.desinscrever.push(cancelar);
 }
@@ -468,6 +470,12 @@ function iniciarDados() {
     });
   }
   ouvir(collection(db, 'roteiros'), (s) => { estado.roteiros = docsComId(s).sort((x, y) => x.titulo.localeCompare(y.titulo, 'pt-BR')); agendarRender(); });
+  // cobranças de distribuição (silencioso: se as regras ainda não foram publicadas, o painel segue normal)
+  if (verTudo()) {
+    ouvir(collection(db, 'cobrancas'), (s) => { estado.cobrancas = new Map(docsComId(s).map((c) => [c.lojaId, c])); agendarRender(); }, true);
+  } else if (ehSupervisor() && me.lojaId) {
+    ouvir(query(collection(db, 'cobrancas'), where('lojaId', '==', me.lojaId)), (s) => { estado.cobranca = docsComId(s)[0] || null; atualizarCobranca(); }, true);
+  }
   if (verTudo()) ouvir(collection(db, 'lotes'), (s) => { estado.lotes = docsComId(s).sort((a, b) => (a.id < b.id ? 1 : -1)); agendarRender(); });
   const leadsConsulta = verTudo() ? collection(db, 'leads')
     : ehSupervisor() ? query(collection(db, 'leads'), where('lojaId', '==', me.lojaId))
@@ -527,10 +535,93 @@ function verificarRetornos() {
   if (vencidos.length > 5) aviso(`Mais ${vencidos.length - 5} retornos esperando. Veja em Leads ("Retorno agendado").`);
   if (vencidos.length) apito();
 }
+function tiquePainel() { verificarRetornos(); atualizarFaixa(); atualizarCobranca(); }
 function iniciarLembretes() {
-  if (estado.timerLembretes) { verificarRetornos(); return; }
-  estado.timerLembretes = setInterval(verificarRetornos, 20000);
-  verificarRetornos();
+  if (estado.timerLembretes) { tiquePainel(); return; }
+  estado.timerLembretes = setInterval(tiquePainel, 20000);
+  tiquePainel();
+}
+
+// ---------- distribuição pendente: faixa do supervisor, aviso de cobrança e quadro do gerente ----------
+function minhaPendencia() {
+  if (!ehSupervisor() || !estado.leadsPronto || !estado.me.lojaId) return null;
+  return L.pendenciasDistribuicao(leadsLista()).find((p) => p.lojaId === estado.me.lojaId) || null;
+}
+
+// Faixa fixa no topo (supervisor): fica até os leads da loja terem consultor.
+function atualizarFaixa() {
+  const el = document.getElementById('faixa-pend');
+  if (!el) return;
+  const p = estado.aba === 'distribuir' ? null : minhaPendencia();
+  if (!p) { el.className = ''; el.hidden = true; limpar(el); return; }
+  const chave = `${p.qtd}|${p.dias}`;
+  if (el.dataset.chave === chave && !el.hidden) return;
+  el.dataset.chave = chave;
+  el.hidden = false;
+  el.className = `faixa-pend ${p.nivel}`;
+  limpar(el);
+  el.append(h('span', { text: `Você tem ${L.textoPendencia(p.qtd, p.dias)}.` }),
+    h('button', { class: 'btn peq', text: 'Distribuir agora', onclick: () => { estado.aba = 'distribuir'; telaApp(); } }));
+}
+
+// Aviso de cobrança (supervisor): fica na tela, com som, até ele confirmar que viu.
+function atualizarCobranca() {
+  const cont = document.getElementById('avisos');
+  if (!cont) return;
+  const velho = document.getElementById('aviso-cobranca');
+  const c = estado.cobranca;
+  const p = minhaPendencia();
+  if (!(c && p && c.ultima > (c.visto || 0))) { velho?.remove(); return; }
+  const texto = `${c.porNome} pediu que você distribua os leads da sua loja (${L.textoPendencia(p.qtd, p.dias)}).`;
+  if (velho && velho.dataset.ultima === String(c.ultima)) { velho.querySelector('span').textContent = texto; return; }
+  velho?.remove();
+  const cartao = h('div', { class: 'lembrete cobranca', id: 'aviso-cobranca', role: 'alert', 'data-ultima': String(c.ultima) },
+    h('strong', { text: 'Cobrança de distribuição' }), h('span', { text: texto }),
+    h('div', { class: 'acoes' },
+      h('button', { class: 'btn peq', text: 'Vou distribuir agora', onclick: async () => {
+        cartao.remove();
+        try { await updateDoc(doc(db, 'cobrancas', c.lojaId), { visto: c.ultima }); } catch (e) { console.error('cobranca ciente', e?.code || e); }
+        estado.aba = 'distribuir'; telaApp();
+      } })));
+  cont.append(cartao);
+  apito(); setTimeout(apito, 450);
+  try { if ('Notification' in window && Notification.permission === 'granted') new Notification('Cobrança de distribuição', { body: texto, tag: 'cobranca' }); } catch { /* sem suporte */ }
+}
+
+async function cobrarLoja(p, supervisor) {
+  const ant = estado.cobrancas.get(p.lojaId);
+  try {
+    await setDoc(doc(db, 'cobrancas', p.lojaId), {
+      lojaId: p.lojaId, vezes: (ant?.vezes || 0) + 1, ultima: Math.max(Date.now(), (ant?.ultima || 0) + 1),
+      porNome: estado.me.nome, visto: ant?.visto || 0,
+    });
+    aviso(`Cobrança enviada para ${supervisor.nome}.`);
+  } catch (e) {
+    console.error('cobrar', e?.code || e);
+    aviso('Não consegui enviar a cobrança. Tente de novo.', 'erro');
+  }
+}
+
+// Quadro do Gerente Geral / Admin: lojas com leads parados, as mais atrasadas primeiro.
+function quadroPendencias() {
+  if (!estado.leadsPronto) return null;
+  const lista = L.pendenciasDistribuicao(leadsLista());
+  const quando = (ms) => new Date(ms).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const titulo = h('h2', { text: 'Distribuição pendente nas lojas' });
+  if (!lista.length) return h('div', { class: 'cartao' }, titulo, h('p', { class: 'ok-pend', text: 'Tudo distribuído ✓' }));
+  return h('div', { class: 'cartao' }, titulo, h('div', { class: 'tabela-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {}, h('th', { text: 'Loja' }), h('th', { class: 'num', text: 'Sem consultor' }), h('th', { text: 'Parados há' }), h('th', { text: 'Cobranças' }), h('th'))),
+    h('tbody', {}, lista.map((p) => {
+      const sup = supervisorDaLoja(p.lojaId);
+      const c = estado.cobrancas.get(p.lojaId);
+      const situacao = !c ? '—' : `${c.vezes}× · ${quando(c.ultima)} · ${c.ultima > (c.visto || 0) ? 'ainda não visto' : 'visto'}`;
+      return h('tr', {},
+        h('td', {}, nomeLoja(p.lojaId), h('div', { class: 'dica', text: sup ? `Supervisor: ${sup.nome}` : 'sem supervisor' })),
+        h('td', { class: 'num', text: String(p.qtd) }),
+        h('td', {}, h('span', { class: `atraso ${p.nivel}`, text: p.dias === 0 ? 'hoje' : L.plural(p.dias, 'dia', 'dias') })),
+        h('td', { text: situacao }),
+        h('td', {}, h('button', { class: 'btn peq', text: 'Cobrar', disabled: !sup, title: sup ? '' : 'A loja não tem supervisor cadastrado', 'aria-label': `Cobrar ${nomeLoja(p.lojaId)}`, onclick: (e) => { e.target.disabled = true; cobrarLoja(p, sup).then(() => { e.target.disabled = !sup; }); } })));
+    })))));
 }
 
 async function semearProdutos() {
@@ -591,6 +682,7 @@ function telaApp() {
       onclick: () => { estado.aba = a; telaApp(); }, text: ABAS[a],
     }))));
   }
+  raiz.append(h('div', { id: 'faixa-pend', hidden: true }));
   raiz.append(h('main', { id: 'conteudo' }));
   renderConteudo();
 }
@@ -605,6 +697,8 @@ function renderConteudo() {
   const views = { leads: viewLeads, distribuir: viewDistribuir, relatorio: viewRelatorio, ranking: viewRanking, roteiro: viewRoteiro, importar: viewImportar, equipe: viewEquipe, cadastros: viewCadastros };
   c.append(views[estado.aba]());
   window.scrollTo(0, y);
+  atualizarFaixa();
+  atualizarCobranca();
 }
 
 // ---------- LEADS ----------
@@ -906,6 +1000,7 @@ function viewDistribuir() {
     ? lojasAtivas().map((l) => ({ id: l.id, nome: l.nome, sub: supervisorDaLoja(l.id)?.nome || 'sem supervisor' }))
     : consultoresDaLoja(lojaAlvo).map((u) => ({ id: u.id, nome: u.nome, sub: '' }));
 
+  const quadro = verTudo() ? quadroPendencias() : null;
   const topo = h('div', { class: 'cartao' });
   const controles = [];
   if (ehAdmin()) {
@@ -924,8 +1019,8 @@ function viewDistribuir() {
     ...(controles.length ? [h('div', { class: 'linha' }, controles)] : []));
 
   if (!estado.leadsPronto) return h('div', {}, topo, carregandoLogo());
-  if (!colunas.length) return h('div', {}, topo, h('div', { class: 'cartao' }, h('p', { class: 'vazio', text: modo === 'lojas' ? 'Nenhum lead esperando distribuição.' : 'Nenhum lead da loja esperando por consultor.' })));
-  if (!alvos.length) return h('div', {}, topo, h('div', { class: 'cartao' }, h('p', { class: 'vazio', text: 'Não há destinatários ativos cadastrados.' })));
+  if (!colunas.length) return h('div', {}, quadro, topo, h('div', { class: 'cartao' }, h('p', { class: 'vazio', text: modo === 'lojas' ? 'Nenhum lead esperando distribuição.' : 'Nenhum lead da loja esperando por consultor.' })));
+  if (!alvos.length) return h('div', {}, quadro, topo, h('div', { class: 'cartao' }, h('p', { class: 'vazio', text: 'Não há destinatários ativos cadastrados.' })));
 
   const plano = d.plano;
   const valorCelula = (alvoId, prod) => plano[alvoId]?.[prod] ?? 0;
@@ -1006,7 +1101,7 @@ function viewDistribuir() {
   });
 
   setTimeout(recalcular, 0);
-  return h('div', {}, topo, h('div', { class: 'cartao' }, tabela,
+  return h('div', {}, quadro, topo, h('div', { class: 'cartao' }, tabela,
     h('div', { class: 'acoes', style: 'display:flex;gap:10px;flex-wrap:wrap;margin-top:14px' }, dividir, zerar, h('span', { style: 'flex:1' }), botaoEnviar)));
 }
 
