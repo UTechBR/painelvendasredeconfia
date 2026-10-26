@@ -571,3 +571,24 @@ export function textoPendencia(qtd, dias) {
   if (dias <= 0) return `${leads}, ${qtd === 1 ? 'chegou' : 'chegaram'} hoje`;
   return `${leads}, ${qtd === 1 ? 'parado' : 'parados'} há ${plural(dias, 'dia', 'dias')}`;
 }
+
+// ---------- leads que o Gerente Geral ainda não enviou às lojas (visão do Admin) ----------
+// Agrupa por lote os leads sem loja. "Desde" = quando o lote foi importado (criadoEm do lead mais antigo).
+export function pendenciasGerente(leads, { agora = Date.now() } = {}) {
+  const porLote = new Map();
+  for (const l of leads) {
+    if (l.indicacao || !l.loteId) continue;
+    const g = porLote.get(l.loteId) || { loteId: l.loteId, produtoId: l.produtoId, total: 0, semLoja: 0, desde: Infinity };
+    g.total += 1;
+    if (!l.lojaId) {
+      g.semLoja += 1;
+      const ms = msDe(l.criadoEm) ?? agora;
+      if (ms < g.desde) g.desde = ms;
+    }
+    porLote.set(l.loteId, g);
+  }
+  return [...porLote.values()].filter((g) => g.semLoja > 0).map((g) => {
+    const dias = Math.max(0, Math.floor((agora - g.desde) / MS_DIA));
+    return { ...g, dias, nivel: dias >= DIAS_ALERTA_VERMELHO ? 'vermelho' : 'amarelo' };
+  }).sort((a, b) => a.desde - b.desde || b.semLoja - a.semLoja);
+}

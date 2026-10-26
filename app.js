@@ -602,6 +602,23 @@ async function cobrarLoja(p, supervisor) {
   }
 }
 
+// Quadro do Admin: lotes que o Gerente Geral ainda não enviou (total ou em parte) às lojas.
+function quadroGerente() {
+  if (!estado.leadsPronto) return null;
+  const lista = L.pendenciasGerente(leadsLista());
+  const titulo = h('h2', { text: 'Aguardando o Gerente Geral' });
+  if (!lista.length) return h('div', { class: 'cartao' }, titulo, h('p', { class: 'ok-pend', text: 'Gerente Geral já enviou tudo às lojas ✓' }));
+  const nomeLote = (id) => estado.lotes.find((x) => x.id === id)?.nome || id;
+  return h('div', { class: 'cartao' }, titulo, h('div', { class: 'tabela-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {}, h('th', { text: 'Lote' }), h('th', { text: 'Produto' }), h('th', { class: 'num', text: 'Sem loja' }), h('th', { class: 'num', text: 'Total' }), h('th', { text: 'Parados há' }))),
+    h('tbody', {}, lista.map((g) => h('tr', {},
+      h('td', { text: nomeLote(g.loteId) }),
+      h('td', { text: nomeProduto(g.produtoId) }),
+      h('td', { class: 'num', text: String(g.semLoja) }),
+      h('td', { class: 'num', text: String(g.total) }),
+      h('td', {}, h('span', { class: `atraso ${g.nivel}`, text: g.dias === 0 ? 'hoje' : L.plural(g.dias, 'dia', 'dias') }))))))));
+}
+
 // Quadro do Gerente Geral / Admin: lojas com leads parados, as mais atrasadas primeiro.
 function quadroPendencias() {
   if (!estado.leadsPronto) return null;
@@ -1000,7 +1017,7 @@ function viewDistribuir() {
     ? lojasAtivas().map((l) => ({ id: l.id, nome: l.nome, sub: supervisorDaLoja(l.id)?.nome || 'sem supervisor' }))
     : consultoresDaLoja(lojaAlvo).map((u) => ({ id: u.id, nome: u.nome, sub: '' }));
 
-  const quadro = verTudo() ? quadroPendencias() : null;
+  const quadro = verTudo() ? h('div', {}, ehAdmin() ? quadroGerente() : null, quadroPendencias()) : null;
   const topo = h('div', { class: 'cartao' });
   const controles = [];
   if (ehAdmin()) {
