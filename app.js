@@ -54,6 +54,11 @@ function h(tag, props = {}, ...filhos) {
   return el;
 }
 function limpar(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+function carregandoLogo(texto = 'Carregando…') {
+  return h('div', { class: 'carregando', role: 'status' },
+    h('div', { class: 'carregando-logo' }, h('img', { src: 'img/logo-rc.png', alt: 'Rede Confia' })),
+    h('span', { text: texto }));
+}
 function hoje() { return new Date().toLocaleDateString('sv-SE'); }
 function agoraBr() { return new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }); }
 function hex(n) { return Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, '0')).join(''); }
@@ -609,7 +614,7 @@ function viewLeads() {
       mostrarLoja ? h('td', { text: l.lojaId ? nomeLoja(l.lojaId) : 'A distribuir' }) : null,
       mostrarConsultor ? h('td', { text: l.consultorId ? nomeUsuario(l.consultorId) : '—' }) : null,
       h('td', {}, h('span', { class: `tag ${l.status}`, text: rotuloStatus(l.status) })))))))
-    : h('p', { class: 'vazio', text: estado.leadsPronto ? 'Nenhum lead por aqui.' : 'Carregando leads…' });
+    : (estado.leadsPronto ? h('p', { class: 'vazio', text: 'Nenhum lead por aqui.' }) : carregandoLogo('Carregando leads…'));
 
   return h('div', {}, cards,
     h('div', { class: 'cartao' }, h('div', { class: 'linha' }, filtros),
@@ -831,9 +836,9 @@ function viewDistribuir() {
       h('option', { value: '', text: 'Todos os lotes' }), estado.lotes.map((l) => h('option', { value: l.id, text: l.nome, selected: d.lote === l.id })))));
   }
   topo.append(h('h2', { text: modo === 'lojas' ? 'Enviar leads para as lojas' : 'Passar leads para os consultores' }),
-    controles.length ? h('div', { class: 'linha' }, controles) : null);
+    ...(controles.length ? [h('div', { class: 'linha' }, controles)] : []));
 
-  if (!estado.leadsPronto) return h('div', {}, topo, h('p', { class: 'carregando', text: 'Carregando…' }));
+  if (!estado.leadsPronto) return h('div', {}, topo, carregandoLogo());
   if (!colunas.length) return h('div', {}, topo, h('div', { class: 'cartao' }, h('p', { class: 'vazio', text: modo === 'lojas' ? 'Nenhum lead esperando distribuição.' : 'Nenhum lead da loja esperando por consultor.' })));
   if (!alvos.length) return h('div', {}, topo, h('div', { class: 'cartao' }, h('p', { class: 'vazio', text: 'Não há destinatários ativos cadastrados.' })));
 
@@ -1016,7 +1021,7 @@ function viewImportar() {
     const assinatura = `${produto.value}|${org}|${arq.name}|${arq.size}|${arq.lastModified}`;
     if (assinatura === ultimaAssinatura) return;
     ultimaAssinatura = assinatura;
-    if (!estado.leadsPronto) { limpar(saida); saida.append(h('p', { class: 'dica', text: 'Aguarde: ainda carregando os leads existentes…' })); ultimaAssinatura = ''; return; }
+    if (!estado.leadsPronto) { limpar(saida); saida.append(carregandoLogo('Aguarde: carregando os leads existentes…')); ultimaAssinatura = ''; return; }
     const novoConteudo = [];
     let novoPreparado = null;
     try {

@@ -99,7 +99,14 @@ dl.dados dt{color:var(--suave)} dl.dados dd{margin:0;word-break:break-word}
 .dist td input.acima{border-color:var(--erro);background:var(--erro-fundo)}
 .rodape-dist td{font-weight:700;background:#faf7f2}
 .senha{font:700 20px/1 ui-monospace,Consolas,monospace;background:#fff8ef;border:1px dashed var(--laranja);padding:10px 14px;border-radius:8px;display:inline-block;margin:6px 0;letter-spacing:.5px;user-select:all}
-.carregando{padding:40px;text-align:center;color:var(--suave)}
+.carregando{padding:40px 16px;text-align:center;color:var(--suave);display:flex;flex-direction:column;align-items:center;gap:12px}
+.carregando-logo{background:linear-gradient(135deg,#a80d12,#560306);border-radius:16px;padding:14px 22px;box-shadow:0 6px 18px rgba(86,3,6,.25);animation:pulsa 1.6s ease-in-out infinite}
+.carregando-logo img{display:block;height:44px;width:auto}
+.carregando-tela{min-height:100vh;justify-content:center;background:linear-gradient(135deg,#a80d12 0%,#7c0508 55%,#560306 100%);color:#fbe9dc}
+.carregando-tela .carregando-logo{background:none;box-shadow:none;padding:0}
+.carregando-tela .carregando-logo img{height:auto;width:clamp(150px,34vw,260px)}
+@keyframes pulsa{0%,100%{opacity:.55;transform:scale(.97)}50%{opacity:1;transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){.carregando-logo{animation:none}}
 /* tela de entrada */
 .entrada{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(340px,.85fr);min-height:100vh}
 .hero{position:relative;overflow:hidden;color:#fbe9dc;
@@ -118,7 +125,7 @@ dl.dados dt{color:var(--suave)} dl.dados dd{margin:0;word-break:break-word}
 </style>
 </head>
 <body>
-<div id="app"><p class="carregando">Carregando…</p></div>
+<div id="app"><div class="carregando carregando-tela" role="status"><div class="carregando-logo"><img src="img/logo-rc.png" alt="Rede Confia"></div><span>Carregando…</span></div></div>
 <div id="avisos" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
 </body>
