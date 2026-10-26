@@ -1,0 +1,168 @@
+rules_version = '2';
+
+// Regras de segurança do Painel Rede Confia.
+// Quem decide o que cada pessoa pode ver e alterar é ESTE arquivo (no servidor),
+// não a tela. Cole no Firebase: Firestore Database > Regras > Publicar.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- funções de apoio ----------
+    function logado() { return request.auth != null; }
+    function docUsuario(uid) { return /databases/$(database)/documents/usuarios/$(uid); }
+    function existeUsuario() { return logado() && exists(docUsuario(request.auth.uid)); }
+    function eu() { return get(docUsuario(request.auth.uid)).data; }
+    function ativo() { return existeUsuario() && eu().ativo == true; }
+    function ehAdmin() { return ativo() && eu().role == 'admin'; }
+    function ehDiretor() { return ativo() && eu().role == 'diretor'; }
+    function ehSupervisor() { return ativo() && eu().role == 'supervisor'; }
+    function ehConsultor() { return ativo() && eu().role == 'consultor'; }
+
+    // Quem pode redefinir a senha / gerenciar o usuário "alvo":
+    // admin -> qualquer um; diretor -> supervisores; supervisor -> consultores da própria loja.
+    function podeGerenciar(alvo) {
+      return ehAdmin()
+        || (ehDiretor() && alvo.role == 'supervisor')
+        || (ehSupervisor() && alvo.role == 'consultor' && alvo.lojaId == eu().lojaId);
+    }
+
+    function setupFeito() { return exists(/databases/$(database)/documents/config/setup); }
+    function setupFeitoDepois() { return existsAfter(/databases/$(database)/documents/config/setup); }
+
+    // ---------- configuração inicial (cria o primeiro administrador, uma única vez) ----------
+    match /config/setup {
+      allow get: if true;
+      allow create: if logado() && !setupFeito()
+        && getAfter(docUsuario(request.auth.uid)).data.role == 'admin';
+      allow update, delete: if false;
+    }
+
+    // ---------- cadastros ----------
+    match /produtos/{id} {
+      allow read: if ativo();
+      allow write: if ehAdmin();
+    }
+    match /lojas/{id} {
+      allow read: if ativo();
+      allow write: if ehAdmin();
+    }
+    match /lotes/{id} {
+      allow read: if ehAdmin() || ehDiretor();
+      allow write: if ehAdmin();
+    }
+
+    // ---------- roteiro (material de consulta: todos leem, só o admin publica) ----------
+    match /roteiros/{id} {
+      allow read: if ativo();
+      allow write: if ehAdmin();
+    }
+    match /roteiro_paginas/{id} {
+      allow read: if ativo();
+      allow write: if ehAdmin();
+    }
+
+    // ---------- usuários ----------
+    match /usuarios/{uid} {
+      allow get: if (logado() && request.auth.uid == uid)
+        || ehAdmin() || ehDiretor()
+        || (ehSupervisor() && resource.data.lojaId == eu().lojaId);
+      allow list: if ehAdmin() || ehDiretor()
+        || (ehSupervisor() && resource.data.lojaId == eu().lojaId);
+
+      allow create:
+        // 1) administrador cadastra qualquer pessoa
+        if ehAdmin()
+        // 2) primeiro acesso: o próprio dono cria o administrador inicial
+        || (logado() && request.auth.uid == uid && !setupFeito() && setupFeitoDepois()
+            && request.resource.data.role == 'admin')
+        // 3) redefinição de senha: a conta nova copia a antiga, sem mudar cargo nem loja
+        || (request.resource.data.resetOf is string
+            && podeGerenciar(get(docUsuario(request.resource.data.resetOf)).data)
+            && request.resource.data.id == get(docUsuario(request.resource.data.resetOf)).data.id
+            && request.resource.data.usuario == get(docUsuario(request.resource.data.resetOf)).data.usuario
+            && request.resource.data.role == get(docUsuario(request.resource.data.resetOf)).data.role
+            && request.resource.data.lojaId == get(docUsuario(request.resource.data.resetOf)).data.lojaId);
+
+      allow update:
+        // a própria pessoa só pode confirmar que já trocou a senha provisória
+        if (logado() && request.auth.uid == uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mustChange'])
+            && request.resource.data.mustChange == false)
+        || ehAdmin();
+
+      allow delete: if logado() && request.auth.uid != uid && podeGerenciar(resource.data);
+    }
+
+    // Usado só para descobrir o e-mail interno a partir do nome de usuário, antes do login.
+    match /logins/{usuario} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update:
+        // quem tem autoridade sobre o usuário (cadastro ou redefinição de senha)
+        if ((ehAdmin() || ehDiretor() || ehSupervisor())
+            && getAfter(docUsuario(request.resource.data.uid)).data.usuario == usuario
+            && podeGerenciar(getAfter(docUsuario(request.resource.data.uid)).data))
+        // primeiro acesso (administrador inicial)
+        || (logado() && !setupFeito() && setupFeitoDepois()
+            && request.resource.data.uid == request.auth.uid
+            && getAfter(docUsuario(request.auth.uid)).data.usuario == usuario);
+      allow delete: if ehAdmin();
+    }
+
+    // ---------- leads ----------
+    match /leads/{leadId} {
+      allow read: if ehAdmin() || ehDiretor()
+        || (ehSupervisor() && resource.data.lojaId == eu().lojaId)
+        || (ehConsultor() && resource.data.consultorId == eu().id);
+
+      // Importação (admin) e leads de indicação gerados numa venda fechada.
+      allow create: if ehAdmin()
+        || ((ehConsultor() || ehSupervisor())
+            && request.resource.data.indicacao == true
+            && request.resource.data.status == 'novo'
+            && request.resource.data.lojaId == eu().lojaId
+            && request.resource.data.cpf.matches('^[0-9]{11}$')
+            && request.resource.data.nome is string
+            && request.resource.data.nome.size() >= 2 && request.resource.data.nome.size() <= 120
+            && request.resource.data.indicadoDe is string
+            && getAfter(/databases/$(database)/documents/leads/$(request.resource.data.indicadoDe)).data.status == 'venda'
+            && get(/databases/$(database)/documents/leads/$(request.resource.data.indicadoDe)).data.lojaId == eu().lojaId
+            && (ehSupervisor() || get(/databases/$(database)/documents/leads/$(request.resource.data.indicadoDe)).data.consultorId == eu().id));
+
+      allow update:
+        // Admin altera o lead, mas nunca "reimporta por cima": a data de criação não pode mudar
+        // (uma importação repetida do mesmo CPF seria negada em vez de apagar o andamento).
+        if (ehAdmin()
+            && (!('criadoEm' in resource.data) || request.resource.data.criadoEm == resource.data.criadoEm))
+
+        // Diretor envia leads ainda sem loja para uma loja.
+        || (ehDiretor()
+            && resource.data.lojaId == null
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lojaId', 'enviadoEm'])
+            && request.resource.data.lojaId is string)
+
+        // Supervisor reparte os leads da própria loja entre os consultores.
+        || (ehSupervisor() && resource.data.lojaId == eu().lojaId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['consultorId', 'atribuidoEm']))
+
+        // Supervisor e consultor trabalham o lead (status, observação, venda).
+        || (((ehSupervisor() && resource.data.lojaId == eu().lojaId)
+             || (ehConsultor() && resource.data.consultorId == eu().id && resource.data.status != 'venda'))
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'motivo', 'obs', 'vendaEm', 'retornarEm', 'retornarHora', 'indicacoes', 'atualizadoEm', 'hist'])
+            // venda fechada só com as 3 indicações (nome e CPF) preenchidas
+            && (request.resource.data.status != 'venda'
+                || (request.resource.data.indicacoes.size() >= 3
+                    && request.resource.data.indicacoes[0].nome is string && request.resource.data.indicacoes[0].cpf.matches('^[0-9]{11}$')
+                    && request.resource.data.indicacoes[1].nome is string && request.resource.data.indicacoes[1].cpf.matches('^[0-9]{11}$')
+                    && request.resource.data.indicacoes[2].nome is string && request.resource.data.indicacoes[2].cpf.matches('^[0-9]{11}$'))));
+
+      allow delete: if ehAdmin();
+    }
+
+    // Todo o resto fica fechado.
+    match /{outro=**} {
+      allow read, write: if false;
+    }
+  }
+}

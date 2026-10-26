@@ -13,7 +13,7 @@ import {
   reauthenticateWithCredential, EmailAuthProvider,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {
-  getFirestore, doc, collection, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, onSnapshot, query, where, serverTimestamp,
+  getFirestore, doc, collection, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch, onSnapshot, query, where, serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const raiz = document.getElementById('app');
@@ -30,6 +30,8 @@ const estado = {
   f: { status: '', produto: '', consultor: '', loja: '', busca: '', limite: LINHAS_POR_PAGINA },
   dist: { modo: 'lojas', loja: '', lote: '', plano: {} },
   rel: { produto: '', lote: '' },
+  rank: { produto: '', periodo: 'mes', modo: 'lojas' },
+  roteiros: [], rot: { id: null, pagina: 1, busca: '', paginas: null, chave: '', carregando: false, erro: false },
   desinscrever: [], modais: 0, renderPendente: false, timerInatividade: null,
 };
 
@@ -180,6 +182,17 @@ const ehSupervisor = () => estado.me?.role === 'supervisor';
 const ehConsultor = () => estado.me?.role === 'consultor';
 const verTudo = () => ehAdmin() || ehDiretor();
 const rotuloStatus = (id) => L.STATUS.find((s) => s.id === id)?.nome || id;
+const descStatus = (id) => L.STATUS.find((s) => s.id === id)?.desc || '';
+const dataBr = (iso) => (iso || '').split('-').reverse().join('/');
+// Retorno agendado: data e hora combinadas com o cliente
+const retornoMs = (l) => (l.status === 'retornar' && l.retornarEm ? new Date(`${l.retornarEm}T${l.retornarHora || '00:00'}:00`).getTime() : null);
+function rotuloLead(l) {
+  const t = retornoMs(l);
+  if (t === null) return rotuloStatus(l.status);
+  const agora = Date.now();
+  const aviso = t <= agora ? ' · atrasado' : l.retornarEm === hoje() ? ' · hoje' : '';
+  return `Retorno agendado · ${dataBr(l.retornarEm)}${l.retornarHora ? ` ${l.retornarHora}` : ''}${aviso}`;
+}
 
 // ---------- inicialização ----------
 function configurado() {
@@ -354,12 +367,15 @@ async function sair(msg = '') {
 }
 
 function encerrarDados() {
+  clearInterval(estado.timerLembretes); estado.timerLembretes = null;
+  document.querySelectorAll('#avisos .lembrete').forEach((e) => e.remove());
   estado.desinscrever.forEach((f) => f());
   estado.desinscrever = [];
   estado.leadsMap = new Map();
   estado.leadsCache = null;
   estado.leadsPronto = false;
-  estado.produtos = []; estado.lojas = []; estado.usuarios = []; estado.lotes = [];
+  estado.produtos = []; estado.lojas = []; estado.usuarios = []; estado.lotes = []; estado.roteiros = [];
+  estado.rot = { id: null, pagina: 1, busca: '', paginas: null, chave: '', carregando: false, erro: false };
 }
 
 // ---------- troca de senha ----------
@@ -451,6 +467,7 @@ function iniciarDados() {
       agendarRender();
     });
   }
+  ouvir(collection(db, 'roteiros'), (s) => { estado.roteiros = docsComId(s).sort((x, y) => x.titulo.localeCompare(y.titulo, 'pt-BR')); agendarRender(); });
   if (verTudo()) ouvir(collection(db, 'lotes'), (s) => { estado.lotes = docsComId(s).sort((a, b) => (a.id < b.id ? 1 : -1)); agendarRender(); });
   const leadsConsulta = verTudo() ? collection(db, 'leads')
     : ehSupervisor() ? query(collection(db, 'leads'), where('lojaId', '==', me.lojaId))
@@ -462,8 +479,58 @@ function iniciarDados() {
     }
     estado.leadsCache = null;
     estado.leadsPronto = true;
+    iniciarLembretes();
     agendarRender();
   });
+}
+
+// ---------- lembretes de "Retorno agendado" ----------
+function pedirPermissaoAvisos() {
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch { /* sem suporte */ }
+}
+const chaveAviso = (l) => `${l.id}|${l.retornarEm}|${l.retornarHora || ''}`;
+function jaAvisado(l) { try { return (JSON.parse(localStorage.getItem('avisadosRetorno') || '[]')).includes(chaveAviso(l)); } catch { return false; } }
+function marcarAvisado(l) {
+  try { const v = JSON.parse(localStorage.getItem('avisadosRetorno') || '[]'); v.push(chaveAviso(l)); localStorage.setItem('avisadosRetorno', JSON.stringify(v.slice(-300))); } catch { /* sem armazenamento: avisa de novo no próximo ciclo */ }
+}
+function apito() {
+  try {
+    const c = new (window.AudioContext || window.webkitAudioContext)();
+    const o = c.createOscillator(); const g = c.createGain();
+    o.connect(g); g.connect(c.destination); o.frequency.value = 880; g.gain.value = 0.08;
+    o.start(); setTimeout(() => { o.stop(); c.close(); }, 350);
+  } catch { /* o navegador pode bloquear som sem clique prévio */ }
+}
+function meuRetorno(l) {
+  const me = estado.me;
+  if (!me || l.status !== 'retornar') return false;
+  if (me.role === 'consultor') return l.consultorId === me.id;
+  if (me.role === 'supervisor') return l.lojaId === me.lojaId && (!l.consultorId || l.consultorId === me.id);
+  return false;
+}
+function verificarRetornos() {
+  if (!estado.me || !estado.leadsPronto) return;
+  const vencidos = leadsLista().filter((l) => meuRetorno(l) && retornoMs(l) !== null && retornoMs(l) <= Date.now() && !jaAvisado(l))
+    .sort((x, y) => retornoMs(x) - retornoMs(y));
+  vencidos.slice(0, 5).forEach((l) => {
+    marcarAvisado(l);
+    const titulo = 'Hora do retorno';
+    const texto = `${l.nome}${l.telefone ? ` · ${L.formatarTelefone(l.telefone)}` : ''} (marcado para ${dataBr(l.retornarEm)} ${l.retornarHora || ''})`.trim();
+    const cartao = h('div', { class: 'lembrete', role: 'alert' },
+      h('strong', { text: titulo }), h('span', { text: texto }),
+      h('div', { class: 'acoes' },
+        h('button', { class: 'btn peq', text: 'Abrir ficha', onclick: () => { cartao.remove(); abrirFicha(l.id); } }),
+        h('button', { class: 'btn sec peq', text: 'Dispensar', onclick: () => cartao.remove() })));
+    document.getElementById('avisos').append(cartao);
+    try { if ('Notification' in window && Notification.permission === 'granted') new Notification(titulo, { body: texto, tag: chaveAviso(l) }); } catch { /* sem suporte */ }
+  });
+  if (vencidos.length > 5) aviso(`Mais ${vencidos.length - 5} retornos esperando. Veja em Leads ("Retorno agendado").`);
+  if (vencidos.length) apito();
+}
+function iniciarLembretes() {
+  if (estado.timerLembretes) { verificarRetornos(); return; }
+  estado.timerLembretes = setInterval(verificarRetornos, 20000);
+  verificarRetornos();
 }
 
 async function semearProdutos() {
@@ -495,13 +562,13 @@ document.addEventListener('focusout', () => { if (estado.renderPendente) setTime
 
 // ---------- esqueleto da tela ----------
 const ABAS = {
-  leads: 'Leads', distribuir: 'Distribuir', relatorio: 'Relatório', importar: 'Importar', equipe: 'Equipe', cadastros: 'Cadastros',
+  leads: 'Leads', distribuir: 'Distribuir', relatorio: 'Relatório', ranking: 'Ranking', roteiro: 'Roteiro', importar: 'Importar', equipe: 'Equipe', cadastros: 'Cadastros',
 };
 function abasDoPerfil() {
-  if (ehAdmin()) return ['leads', 'distribuir', 'relatorio', 'importar', 'equipe', 'cadastros'];
-  if (ehDiretor()) return ['distribuir', 'relatorio', 'leads', 'equipe'];
-  if (ehSupervisor()) return ['leads', 'distribuir', 'relatorio', 'equipe'];
-  return ['leads'];
+  if (ehAdmin()) return ['leads', 'distribuir', 'relatorio', 'ranking', 'roteiro', 'importar', 'equipe', 'cadastros'];
+  if (ehDiretor()) return ['distribuir', 'relatorio', 'ranking', 'leads', 'roteiro', 'equipe'];
+  if (ehSupervisor()) return ['leads', 'distribuir', 'ranking', 'relatorio', 'roteiro', 'equipe'];
+  return ['leads', 'roteiro'];
 }
 
 function textoQuem() {
@@ -535,13 +602,17 @@ function renderConteudo() {
   const quem = document.getElementById('quem-cargo');
   if (quem) quem.textContent = textoQuem();
   limpar(c);
-  const views = { leads: viewLeads, distribuir: viewDistribuir, relatorio: viewRelatorio, importar: viewImportar, equipe: viewEquipe, cadastros: viewCadastros };
+  const views = { leads: viewLeads, distribuir: viewDistribuir, relatorio: viewRelatorio, ranking: viewRanking, roteiro: viewRoteiro, importar: viewImportar, equipe: viewEquipe, cadastros: viewCadastros };
   c.append(views[estado.aba]());
   window.scrollTo(0, y);
 }
 
 // ---------- LEADS ----------
-function ordemStatus(s) { return { novo: 0, atendimento: 1, proposta: 2, perdido: 3, venda: 4 }[s] ?? 9; }
+function ordemStatus(l) {
+  const t = retornoMs(l);
+  if (t !== null && t <= Date.now()) return -1; // retorno que já chegou na hora (ou passou) vai para o topo
+  return { novo: 0, semcontato: 1, retornar: 2, atendimento: 3, aguardando: 4, proposta: 5, perdido: 6, venda: 7 }[l.status] ?? 9;
+}
 
 function leadsFiltrados(ignorarStatus = false) {
   const f = estado.f;
@@ -566,13 +637,13 @@ function viewLeads() {
   const base = leadsFiltrados(true);
   const contagem = L.contarStatus(base);
   const lista = base.filter((l) => !f.status || l.status === f.status)
-    .sort((a, b) => ordemStatus(a.status) - ordemStatus(b.status) || (a.loteId < b.loteId ? 1 : a.loteId > b.loteId ? -1 : 0) || (a.ord ?? 0) - (b.ord ?? 0));
+    .sort((a, b) => ordemStatus(a) - ordemStatus(b) || (a.loteId < b.loteId ? 1 : a.loteId > b.loteId ? -1 : 0) || (a.ord ?? 0) - (b.ord ?? 0));
   const distribuidos = base.filter((l) => !l.indicacao && l.lojaId);
   const vendasDist = distribuidos.filter((l) => l.status === 'venda').length;
 
   const cards = h('div', { class: 'cards' },
     L.STATUS.map((s) => h('button', {
-      class: 'card', 'aria-pressed': String(f.status === s.id),
+      class: 'card dica-card', 'aria-pressed': String(f.status === s.id), 'data-desc': s.desc,
       onclick: () => { f.status = f.status === s.id ? '' : s.id; f.limite = LINHAS_POR_PAGINA; renderConteudo(); },
     }, h('small', { text: s.nome }), h('strong', { text: contagem[s.id] }))),
     h('div', { class: 'card' }, h('small', { text: 'Conversão' }), h('strong', { text: L.formatarPct(L.conversao(vendasDist, distribuidos.length)) })));
@@ -613,7 +684,7 @@ function viewLeads() {
       h('td', { text: l.origem || '' }),
       mostrarLoja ? h('td', { text: l.lojaId ? nomeLoja(l.lojaId) : 'A distribuir' }) : null,
       mostrarConsultor ? h('td', { text: l.consultorId ? nomeUsuario(l.consultorId) : '—' }) : null,
-      h('td', {}, h('span', { class: `tag ${l.status}`, text: rotuloStatus(l.status) })))))))
+      h('td', {}, h('span', { class: `tag ${l.status}`, text: rotuloLead(l) })))))))
     : (estado.leadsPronto ? h('p', { class: 'vazio', text: 'Nenhum lead por aqui.' }) : carregandoLogo('Carregando leads…'));
 
   return h('div', {}, cards,
@@ -659,7 +730,7 @@ function abrirFicha(leadId) {
   let m;
 
   if (!podeEditar) {
-    if (lead.status) corpo.append(h('p', {}, 'Situação: ', h('span', { class: `tag ${lead.status}`, text: rotuloStatus(lead.status) })));
+    if (lead.status) corpo.append(h('p', {}, 'Situação: ', h('span', { class: `tag ${lead.status}`, text: rotuloLead(lead) })));
     if (lead.obs) corpo.append(h('p', { text: `Observação: ${lead.obs}` }));
     if (lead.motivo) corpo.append(h('p', { text: `Motivo: ${lead.motivo}` }));
     if (histLista.length) corpo.append(blocoHistorico(histLista));
@@ -669,7 +740,7 @@ function abrirFicha(leadId) {
 
   const sel = { status: lead.status };
   const botoesStatus = L.STATUS.map((s) => h('button', {
-    type: 'button', 'aria-pressed': String(sel.status === s.id), 'data-status': s.id,
+    type: 'button', 'aria-pressed': String(sel.status === s.id), 'data-status': s.id, 'data-desc': s.desc, class: 'dica-card',
     onclick: () => { sel.status = s.id; botoesStatus.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.status === s.id))); atualizarCampos(); },
     text: s.nome,
   }));
@@ -677,6 +748,11 @@ function abrirFicha(leadId) {
   const motivo = h('input', { type: 'text', maxlength: '120', value: lead.motivo || '' });
   const dataVenda = h('input', { type: 'date', value: lead.vendaEm || hoje() });
   const blocoMotivo = h('div', {}, campo('Motivo (obrigatório)', motivo));
+  const dataRetorno = h('input', { type: 'date', value: lead.retornarEm || '', min: hoje() });
+  const horaRetorno = h('input', { type: 'time', value: lead.retornarHora || '09:00' });
+  const blocoRetorno = h('div', {}, h('div', { class: 'linha' }, campo('Dia (obrigatório)', dataRetorno), campo('Hora (obrigatório)', horaRetorno)),
+    h('p', { class: 'dica', text: 'Na hora marcada o painel mostra um aviso (com o painel aberto no navegador, mesmo em outra aba).' }));
+  const textoStatus = h('p', { class: 'dica', 'aria-live': 'polite' });
   const jaTinhaIndic = (lead.indicacoes || []).length >= L.TOTAL_INDICACOES;
   const itensInd = Array.from({ length: L.TOTAL_INDICACOES }, (_, i) => {
     const ex = (lead.indicacoes || [])[i] || {};
@@ -696,6 +772,8 @@ function abrirFicha(leadId) {
 
   function atualizarCampos() {
     blocoMotivo.hidden = sel.status !== 'perdido';
+    blocoRetorno.hidden = sel.status !== 'retornar';
+    textoStatus.textContent = descStatus(sel.status);
     blocoVenda.hidden = sel.status !== 'venda';
   }
   atualizarCampos();
@@ -704,7 +782,14 @@ function abrirFicha(leadId) {
   botaoSalvar.addEventListener('click', async () => {
     erroGeral.hidden = true;
     itensInd.forEach((it) => { it.erro.hidden = true; });
-    const upd = { status: sel.status, obs: L.limparTexto(obs.value).slice(0, 500), motivo: '', vendaEm: '', atualizadoEm: serverTimestamp() };
+    const upd = { status: sel.status, obs: L.limparTexto(obs.value).slice(0, 500), motivo: '', vendaEm: '', retornarEm: '', retornarHora: '', atualizadoEm: serverTimestamp() };
+    if (sel.status === 'retornar') {
+      if (!dataRetorno.value || !horaRetorno.value) { erroGeral.textContent = 'Informe o dia e a hora do retorno.'; erroGeral.hidden = false; return; }
+      if (new Date(`${dataRetorno.value}T${horaRetorno.value}:00`).getTime() < Date.now() - 60000) { erroGeral.textContent = 'Escolha um dia e hora que ainda não passaram.'; erroGeral.hidden = false; return; }
+      upd.retornarEm = dataRetorno.value;
+      upd.retornarHora = horaRetorno.value;
+      pedirPermissaoAvisos();
+    }
     let indicacoesNovas = null;
     if (sel.status === 'perdido') {
       upd.motivo = L.limparTexto(motivo.value).slice(0, 120);
@@ -762,8 +847,8 @@ function abrirFicha(leadId) {
   });
 
   corpo.append(
-    h('label', { text: 'Situação' }), h('div', { class: 'status-opcoes' }, botoesStatus),
-    blocoMotivo, blocoVenda, campo('Observação', obs), erroGeral);
+    h('label', { text: 'Situação' }), h('div', { class: 'status-opcoes' }, botoesStatus), textoStatus,
+    blocoRetorno, blocoMotivo, blocoVenda, campo('Observação', obs), erroGeral);
 
   if (ehSupervisor() || ehAdmin()) corpo.append(blocoReatribuir(lead, () => m.fechar()));
   if (histLista.length) corpo.append(blocoHistorico(histLista));
@@ -935,7 +1020,28 @@ function viewRelatorio() {
     h('div', {}, h('label', { text: 'Produto' }), h('select', { onchange: (e) => { r.produto = e.target.value; renderConteudo(); } },
       h('option', { value: '', text: 'Todos os produtos' }), estado.produtos.map((p) => h('option', { value: p.id, text: p.nome, selected: r.produto === p.id })))),
     verTudo() ? h('div', {}, h('label', { text: 'Lote' }), h('select', { onchange: (e) => { r.lote = e.target.value; renderConteudo(); } },
-      h('option', { value: '', text: 'Todos os lotes' }), estado.lotes.map((l) => h('option', { value: l.id, text: l.nome, selected: r.lote === l.id })))) : null));
+      h('option', { value: '', text: 'Todos os lotes' }), estado.lotes.map((l) => h('option', { value: l.id, text: l.nome, selected: r.lote === l.id })))) : null,
+    h('div', { class: 'fixo' }, h('button', { class: 'btn sec', onclick: () => exportarRelatorio(), text: 'Exportar relatório (CSV)' }))));
+  const exportarRelatorio = () => {
+    const pct = (v) => L.formatarPct(v);
+    const loteNome = r.lote ? (estado.lotes.find((l) => l.id === r.lote)?.nome || '') : 'Todos os lotes';
+    const saida = [L.linhaCsv(['Relatório de leads · Rede Confia']), L.linhaCsv(['Produto', r.produto ? nomeProduto(r.produto) : 'Todos os produtos']),
+      ...(verTudo() ? [L.linhaCsv(['Lote', loteNome])] : []), L.linhaCsv(['Gerado em', agoraBr()]), '',
+      L.linhaCsv(['Leads enviados', 'Vendas', 'Conversão']), L.linhaCsv([rel.geral.leads, rel.geral.vendas, pct(rel.geral.conv)]), ''];
+    if (!r.produto && rel.produtos.length) {
+      saida.push(L.linhaCsv(['Produto', 'Leads', 'Vendas', 'Conversão']), ...rel.produtos.map((p) => L.linhaCsv([nomeProduto(p.id), p.leads, p.vendas, pct(p.conv)])), '');
+    }
+    if (dadosLojas) {
+      saida.push(L.linhaCsv(['Loja', 'Supervisor', 'Leads', 'Vendas', 'Conversão', ...dadosLojas.colunas.map((p) => `${p.nome} (vendas/leads)`), 'Indicações geradas', 'Vendas das indicações']),
+        ...dadosLojas.linhas.map((l) => L.linhaCsv([nomeLoja(l.id), supervisorDaLoja(l.id)?.nome || '', l.leads, l.vendas, pct(l.conv),
+          ...dadosLojas.colunas.map((p) => (l.porProduto[p.id]?.leads ? `${l.porProduto[p.id].vendas}/${l.porProduto[p.id].leads}` : '')), l.indic.leads, l.indic.vendas])), '');
+    }
+    saida.push(L.linhaCsv(['Consultor', ...(verTudo() ? ['Loja'] : []), 'Leads', 'Vendas', 'Conversão', 'Indicações geradas', 'Vendas das indicações']),
+      ...dadosConsultores.map((c) => L.linhaCsv([c.u.nome, ...(verTudo() ? [nomeLoja(c.u.lojaId)] : []), c.leads, c.vendas, pct(c.conv), c.indic.leads, c.indic.vendas])));
+    baixarCsv(`relatorio-${hoje()}.csv`, saida);
+  };
+  let dadosLojas = null;
+  let dadosConsultores = [];
 
   const cards = h('div', { class: 'cards' },
     h('div', { class: 'card' }, h('small', { text: 'Leads enviados' }), h('strong', { text: rel.geral.leads })),
@@ -969,6 +1075,7 @@ function viewRelatorio() {
       const max = Math.max(0, ...linhas.map((l) => l.porProduto[p.id]?.conv ?? 0));
       melhorPorProduto[p.id] = max;
     });
+    dadosLojas = { linhas, colunas: colunasProd };
     const melhorLoja = linhas.find((l) => l.leads > 0);
     secoes.push(h('div', { class: 'cartao' },
       h('h3', { text: melhorLoja && melhorLoja.conv ? `${nomeLoja(melhorLoja.id)} converte melhor: ${L.formatarPct(melhorLoja.conv)}` : 'Conversão por loja' }),
@@ -993,6 +1100,7 @@ function viewRelatorio() {
   const mapaC = new Map(rel.consultores.map((c) => [c.id, c]));
   const linhasC = consultores.map((u) => ({ u, ...(mapaC.get(u.id) || { leads: 0, vendas: 0, conv: null, indic: { leads: 0, vendas: 0 } }) }))
     .sort((a, b) => (b.conv ?? -1) - (a.conv ?? -1) || b.leads - a.leads);
+  dadosConsultores = linhasC;
   if (!verTudo() && rel.lojas[0]) {
     secoes.push(h('div', { class: 'cartao' }, h('h3', { text: `Conversão da loja: ${L.formatarPct(rel.lojas[0].conv)}` })));
   }
@@ -1002,6 +1110,271 @@ function viewRelatorio() {
       h('tbody', {}, linhasC.map((c) => h('tr', {}, h('td', { text: c.u.nome }), verTudo() ? h('td', { text: nomeLoja(c.u.lojaId) }) : null,
         h('td', { class: 'num', text: c.leads }), h('td', { class: 'num', text: c.vendas }), h('td', { class: 'num' }, L.formatarPct(c.conv), barra(c.conv)), h('td', { class: 'num', text: indicTxt(c.indic) })))))) : h('p', { class: 'vazio', text: 'Nenhum consultor cadastrado.' })));
   return h('div', {}, secoes);
+}
+
+// ---------- RANKING ----------
+function viewRanking() {
+  const k = estado.rank;
+  const modo = ehAdmin() ? k.modo : verTudo() ? 'lojas' : 'consultores';
+  const desde = k.periodo === 'hoje' ? hoje() : k.periodo === 'mes' ? `${hoje().slice(0, 8)}01` : '';
+  const consultores = estado.usuarios.filter((u) => u.role === 'consultor' && u.ativo && (verTudo() || u.lojaId === estado.me.lojaId));
+  const itens = modo === 'lojas' ? lojasAtivas().map((l) => l.id) : consultores.map((u) => u.id);
+  const lista = L.montarRanking(leadsLista(), { chave: modo === 'lojas' ? 'lojaId' : 'consultorId', itens, produtoId: k.produto, desde });
+  const nome = (id) => (modo === 'lojas' ? nomeLoja(id) : nomeUsuario(id));
+  const sub = (id) => (modo === 'lojas' ? (supervisorDaLoja(id)?.nome || '') : (verTudo() ? nomeLoja(estado.usuarios.find((u) => u.id === id)?.lojaId) : ''));
+  const periodoTxt = { hoje: 'hoje', mes: 'neste mês', tudo: 'no total' }[k.periodo];
+
+  const filtros = h('div', { class: 'cartao' }, h('div', { class: 'linha' },
+    ehAdmin() ? campo('Ranking de', h('select', { onchange: (e) => { k.modo = e.target.value; renderConteudo(); } },
+      h('option', { value: 'lojas', text: 'Lojas', selected: k.modo === 'lojas' }), h('option', { value: 'consultores', text: 'Consultores', selected: k.modo === 'consultores' }))) : null,
+    campo('Período', h('select', { onchange: (e) => { k.periodo = e.target.value; renderConteudo(); } },
+      h('option', { value: 'hoje', text: 'Hoje', selected: k.periodo === 'hoje' }), h('option', { value: 'mes', text: 'Este mês', selected: k.periodo === 'mes' }), h('option', { value: 'tudo', text: 'Tudo', selected: k.periodo === 'tudo' }))),
+    campo('Produto', h('select', { onchange: (e) => { k.produto = e.target.value; renderConteudo(); } },
+      h('option', { value: '', text: 'Todos os produtos' }), estado.produtos.map((p) => h('option', { value: p.id, text: p.nome, selected: k.produto === p.id }))))));
+
+  const titulo = h('h2', { text: modo === 'lojas' ? 'Ranking das lojas' : `Ranking dos consultores${verTudo() ? '' : ` · ${nomeLoja(estado.me.lojaId)}`}` });
+  if (!lista.length) return h('div', {}, filtros, h('div', { class: 'cartao' }, titulo, h('p', { class: 'vazio', text: modo === 'lojas' ? 'Nenhuma loja cadastrada.' : 'Nenhum consultor cadastrado.' })));
+
+  const medalha = (p) => `${p}º`;
+  const comVendas = lista[0].vendas > 0;
+  const topo = lista.filter((x) => x.posicao <= 3).slice(0, 3);
+  // pódio: 2º à esquerda, 1º no meio, 3º à direita
+  const ordemPodio = comVendas ? [topo.find((x) => x.posicao === 2), topo.find((x) => x.posicao === 1), topo.find((x) => x.posicao === 3)].filter(Boolean) : [];
+  const podio = comVendas ? h('div', { class: 'podio', role: 'list' }, ordemPodio.map((x) => h('div', { class: `podio-item p${x.posicao}`, role: 'listitem' },
+    h('div', { class: 'podio-nome' }, h('b', { text: nome(x.id) }), h('small', { text: sub(x.id) })),
+    h('div', { class: 'podio-bloco' }, h('span', { class: 'podio-pos', text: medalha(x.posicao) }), h('strong', { text: x.vendas }), h('small', { text: x.vendas === 1 ? 'venda' : 'vendas' }))))) : null;
+  const noPodio = new Set(ordemPodio.map((x) => x.id));
+  const resto = comVendas ? lista.filter((x) => !noPodio.has(x.id)) : lista;
+  const tabela = resto.length ? h('div', { class: 'tabela-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {}, h('th', { text: '#' }), h('th', { text: modo === 'lojas' ? 'Loja' : 'Consultor' }), h('th', { class: 'num', text: 'Vendas' }), h('th', { class: 'num', text: 'Leads' }), h('th', { class: 'num', text: 'Conversão' }))),
+    h('tbody', {}, resto.map((x) => h('tr', {},
+      h('td', { text: medalha(x.posicao) }),
+      h('td', {}, nome(x.id), sub(x.id) ? h('div', { class: 'dica', text: sub(x.id) }) : null),
+      h('td', { class: 'num', text: x.vendas }), h('td', { class: 'num', text: x.leads }), h('td', { class: 'num', text: L.formatarPct(x.conv) }))))) ) : null;
+  return h('div', {}, filtros, h('div', { class: 'cartao' }, titulo,
+    h('p', { class: 'dica', text: `Vendas ${periodoTxt}. Empate: maior conversão (vendas ÷ leads recebidos).` }),
+    comVendas ? null : h('p', { class: 'vazio', text: `Ainda não há vendas ${periodoTxt}.` }), podio, tabela));
+}
+
+// ---------- ROTEIRO (material de consulta, todos os perfis; só o Admin publica) ----------
+function idbAbrir() {
+  return new Promise((ok, falha) => {
+    const r = indexedDB.open('painel-roteiros', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('r');
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => falha(r.error);
+  });
+}
+async function idbLer(k) {
+  try {
+    const d = await idbAbrir();
+    return await new Promise((ok) => { const q = d.transaction('r').objectStore('r').get(k); q.onsuccess = () => ok(q.result || null); q.onerror = () => ok(null); });
+  } catch { return null; }
+}
+async function idbGravar(k, v) {
+  try {
+    const d = await idbAbrir();
+    await new Promise((ok) => { const t = d.transaction('r', 'readwrite'); t.objectStore('r').put(v, k); t.oncomplete = ok; t.onerror = ok; });
+  } catch { /* sem cache: busca de novo na próxima vez */ }
+}
+
+async function carregarRoteiro(meta) {
+  const r = estado.rot;
+  const chave = `${meta.id}:${meta.versao}`;
+  if (r.chave === chave && r.paginas) return;
+  if (r.carregando === chave) return;
+  r.carregando = chave; r.erro = false;
+  try {
+    let paginas = await idbLer(chave);
+    if (!paginas) {
+      const s = await getDocs(query(collection(db, 'roteiro_paginas'), where('roteiroId', '==', meta.id), where('v', '==', meta.versao)));
+      paginas = s.docs.map((d) => d.data()).sort((x, y) => x.n - y.n).map((p) => ({ n: p.n, img: p.img, texto: p.texto || '' }));
+      if (paginas.length) await idbGravar(chave, paginas);
+    }
+    if (!paginas.length) throw new Error('vazio');
+    r.paginas = paginas; r.chave = chave; r.pagina = 1; r.busca = '';
+  } catch (e) {
+    console.error('roteiro', e?.code || e);
+    r.erro = true;
+  }
+  r.carregando = false;
+  agendarRender();
+}
+
+function viewRoteiro() {
+  const r = estado.rot;
+  const ad = ehAdmin();
+  const botoesAdmin = (meta) => (ad ? h('div', { class: 'linha', style: 'margin-bottom:12px' },
+    h('button', { class: 'btn sec peq', onclick: () => abrirPublicarRoteiro(null), text: 'Novo roteiro (PDF)' }),
+    meta ? [h('button', { class: 'btn sec peq', onclick: () => abrirPublicarRoteiro(meta), text: 'Atualizar este roteiro (PDF)' }),
+      h('button', { class: 'btn sec peq', onclick: () => excluirRoteiro(meta), text: 'Excluir' })] : null) : null);
+
+  if (!estado.roteiros.length) {
+    return h('div', { class: 'cartao' }, h('h2', { text: 'Roteiro' }), botoesAdmin(null),
+      h('p', { class: 'vazio', text: ad ? 'Nenhum roteiro publicado ainda. Use "Novo roteiro (PDF)".' : 'Nenhum roteiro publicado ainda.' }));
+  }
+  if (!estado.roteiros.some((x) => x.id === r.id)) { r.id = estado.roteiros[0].id; r.paginas = null; r.chave = ''; }
+  const meta = estado.roteiros.find((x) => x.id === r.id);
+  const seletor = estado.roteiros.length > 1 ? h('div', { class: 'abas-roteiro' }, estado.roteiros.map((x) => h('button', {
+    'aria-pressed': String(x.id === r.id), text: x.titulo,
+    onclick: () => { r.id = x.id; r.paginas = null; r.chave = ''; r.pagina = 1; r.busca = ''; renderConteudo(); },
+  }))) : null;
+  const atualizado = meta.atualizadoEm?.toDate ? meta.atualizadoEm.toDate().toLocaleDateString('pt-BR') : '';
+  const cab = h('div', { class: 'cartao' }, h('h2', { text: meta.titulo }),
+    atualizado ? h('p', { class: 'dica', text: `Atualizado em ${atualizado}${meta.atualizadoPor ? ` por ${meta.atualizadoPor}` : ''}` }) : null,
+    seletor, botoesAdmin(meta));
+
+  if (r.chave !== `${meta.id}:${meta.versao}`) {
+    r.paginas = null;
+    if (!r.erro) carregarRoteiro(meta);
+    return h('div', {}, cab, r.erro
+      ? h('div', { class: 'cartao' }, h('p', { class: 'erro', role: 'alert', text: 'Não consegui abrir o roteiro. Recarregue a página e tente de novo.' }))
+      : carregandoLogo('Abrindo o roteiro…'));
+  }
+  const paginas = r.paginas;
+  const total = paginas.length;
+  r.pagina = Math.min(Math.max(1, r.pagina), total);
+  const ir = (n) => { r.pagina = Math.min(Math.max(1, n), total); renderConteudo(); window.scrollTo(0, 0); };
+  const atual = paginas[r.pagina - 1];
+
+  const busca = h('input', {
+    type: 'search', value: r.busca, placeholder: 'Buscar no roteiro (ex.: margem, token, prazo)…', 'aria-label': 'Buscar no roteiro',
+    oninput: (e) => { r.busca = e.target.value; clearTimeout(estado.tBusca); estado.tBusca = setTimeout(() => { renderConteudo(); const i = document.querySelector('#conteudo input[type=search]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }, 250); },
+  });
+  const termo = L.semAcento(r.busca).toLowerCase().trim();
+  let resultados = null;
+  if (termo.length >= 2) {
+    resultados = paginas.map((p) => {
+      const t = L.semAcento(p.texto).toLowerCase();
+      const i = t.indexOf(termo);
+      return i < 0 ? null : { n: p.n, trecho: `${i > 40 ? '…' : ''}${p.texto.slice(Math.max(0, i - 40), i + 90).trim()}…` };
+    }).filter(Boolean);
+  }
+  const blocoBusca = h('div', { class: 'cartao' }, busca,
+    resultados ? (resultados.length
+      ? h('ul', { class: 'res-roteiro' }, resultados.slice(0, 30).map((x) => h('li', {}, h('button', { class: 'link', onclick: () => { r.busca = ''; ir(x.n); }, text: `Página ${x.n}` }), h('span', { text: ` · ${x.trecho}` }))))
+      : h('p', { class: 'dica', text: 'Não achei esse termo no roteiro.' })) : null);
+
+  const nav = (extra) => h('div', { class: 'nav-roteiro' + (extra ? ` ${extra}` : '') },
+    h('button', { class: 'btn sec', disabled: r.pagina <= 1, onclick: () => ir(r.pagina - 1), text: '← Anterior' }),
+    h('select', { 'aria-label': 'Ir para a página', onchange: (e) => ir(Number(e.target.value)) },
+      paginas.map((p) => h('option', { value: p.n, text: `Página ${p.n} de ${total}`, selected: p.n === r.pagina }))),
+    h('button', { class: 'btn sec', disabled: r.pagina >= total, onclick: () => ir(r.pagina + 1), text: 'Próxima →' }));
+  const imagem = h('img', { class: 'slide', src: atual.img, alt: `Roteiro, página ${r.pagina} de ${total}`, title: 'Toque para ampliar',
+    onclick: () => { const m = abrirModal(`Página ${r.pagina} de ${total}`, h('img', { class: 'slide', src: atual.img, alt: `Roteiro, página ${r.pagina}` }), { largo: true }); return m; } });
+  return h('div', {}, cab, blocoBusca, h('div', { class: 'cartao' }, nav(), imagem, nav('baixo')));
+}
+
+document.addEventListener('keydown', (e) => {
+  if (estado.aba !== 'roteiro' || !estado.me || !estado.rot.paginas) return;
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) || document.querySelector('.modal')) return;
+  const r = estado.rot;
+  if (e.key === 'ArrowRight' && r.pagina < r.paginas.length) { r.pagina++; renderConteudo(); } else if (e.key === 'ArrowLeft' && r.pagina > 1) { r.pagina--; renderConteudo(); }
+});
+
+async function lerPdfEmPaginas(arquivo, aoAvancar) {
+  const pdfjs = await import(new URL('./vendor/pdfjs/pdf.min.js', document.baseURI).href);
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdfjs/pdf.worker.min.js', document.baseURI).href;
+  const doc = await pdfjs.getDocument({ data: await arquivo.arrayBuffer(), isEvalSupported: false }).promise;
+  const paginas = [];
+  for (let n = 1; n <= doc.numPages; n++) {
+    aoAvancar(n, doc.numPages);
+    const pg = await doc.getPage(n);
+    const v0 = pg.getViewport({ scale: 1 });
+    const vp = pg.getViewport({ scale: Math.min(2, 1280 / v0.width) });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await pg.render({ canvasContext: ctx, viewport: vp }).promise;
+    let img = '';
+    for (const q of [0.75, 0.6, 0.45]) { img = canvas.toDataURL('image/jpeg', q); if (img.length < 700000) break; }
+    if (img.length >= 900000) throw new Error(`A página ${n} ficou pesada demais.`);
+    const tc = await pg.getTextContent();
+    const texto = L.limparTexto(tc.items.map((i) => i.str).join(' ')).slice(0, 4000);
+    paginas.push({ n, img, texto });
+    pg.cleanup();
+  }
+  await doc.destroy();
+  return paginas;
+}
+
+function abrirPublicarRoteiro(meta) {
+  const titulo = h('input', { type: 'text', maxlength: '80', value: meta ? meta.titulo : '', placeholder: 'Ex.: BMG – Consignado Privado Trabalhador' });
+  const arquivo = h('input', { type: 'file', accept: '.pdf,application/pdf' });
+  const erro = h('div', { class: 'erro', hidden: true, role: 'alert' });
+  const andamento = h('p', { class: 'dica', 'aria-live': 'polite' });
+  const botao = h('button', { class: 'btn', text: meta ? 'Atualizar roteiro' : 'Publicar roteiro' });
+  let m;
+  botao.addEventListener('click', async () => {
+    erro.hidden = true;
+    const t = L.limparTexto(titulo.value);
+    const f = arquivo.files[0];
+    const id = meta ? meta.id : L.slug(t);
+    if (t.length < 3 || !id) { erro.textContent = 'Informe o título do roteiro.'; erro.hidden = false; return; }
+    if (!meta && estado.roteiros.some((x) => x.id === id)) { erro.textContent = 'Já existe um roteiro com esse título. Use "Atualizar este roteiro".'; erro.hidden = false; return; }
+    if (!f) { erro.textContent = 'Escolha o arquivo PDF.'; erro.hidden = false; return; }
+    if (f.size > 40 * 1024 * 1024) { erro.textContent = 'O PDF é grande demais (máximo 40 MB).'; erro.hidden = false; return; }
+    botao.disabled = true; arquivo.disabled = true; titulo.disabled = true;
+    try {
+      const paginas = await lerPdfEmPaginas(f, (n, tot) => { andamento.textContent = `Preparando a página ${n} de ${tot}…`; });
+      if (!paginas.length) throw new Error('PDF sem páginas');
+      const versao = Date.now();
+      let lote = []; let bytes = 0; let feitas = 0;
+      const gravar = async () => {
+        if (!lote.length) return;
+        const b = writeBatch(db);
+        lote.forEach((p) => b.set(doc(db, 'roteiro_paginas', `${id}_${versao}_${String(p.n).padStart(3, '0')}`), { roteiroId: id, v: versao, n: p.n, img: p.img, texto: p.texto }));
+        await b.commit();
+        feitas += lote.length; lote = []; bytes = 0;
+        andamento.textContent = `Enviando… ${feitas} de ${paginas.length} páginas`;
+      };
+      for (const p of paginas) {
+        if (bytes + p.img.length > 6000000 || lote.length >= 20) await gravar();
+        lote.push(p); bytes += p.img.length;
+      }
+      await gravar();
+      await setDoc(doc(db, 'roteiros', id), { titulo: t, paginas: paginas.length, versao, arquivo: f.name.slice(0, 120), atualizadoEm: serverTimestamp(), atualizadoPor: estado.me.nome });
+      // versões antigas saem depois que a nova já está no ar
+      try {
+        const velhas = await getDocs(query(collection(db, 'roteiro_paginas'), where('roteiroId', '==', id)));
+        const apagar = velhas.docs.filter((d) => d.data().v !== versao).map((d) => d.id);
+        for (let i = 0; i < apagar.length; i += TAMANHO_LOTE_ESCRITA) {
+          const b = writeBatch(db);
+          apagar.slice(i, i + TAMANHO_LOTE_ESCRITA).forEach((pid) => b.delete(doc(db, 'roteiro_paginas', pid)));
+          await b.commit();
+        }
+      } catch (e) { console.error('limpeza roteiro', e?.code || e); }
+      estado.rot.id = id; estado.rot.paginas = null; estado.rot.chave = ''; estado.rot.erro = false;
+      m.fechar();
+      aviso('Roteiro publicado. Já aparece para todos.');
+    } catch (e) {
+      console.error('publicar roteiro', e?.code || e?.message || e);
+      erro.textContent = String(e?.code).includes('permission') ? 'Sem permissão para publicar. Confira se as regras novas do Firebase foram publicadas.' : (e?.message?.includes('pesada') ? e.message : 'Não consegui ler ou enviar o PDF. Tente de novo.');
+      erro.hidden = false; andamento.textContent = '';
+      botao.disabled = false; arquivo.disabled = false; titulo.disabled = !!meta ? true : false;
+    }
+  });
+  if (meta) titulo.disabled = true;
+  m = abrirModal(meta ? 'Atualizar roteiro' : 'Novo roteiro', h('div', {},
+    campo('Título', titulo, meta ? 'O título continua o mesmo. Só o conteúdo é trocado.' : ''), campo('Arquivo PDF', arquivo, 'Cada página vira uma imagem pesquisável. Pode levar alguns minutos para PDFs grandes.'),
+    andamento, erro, h('div', { class: 'acoes' }, botao)));
+}
+
+async function excluirRoteiro(meta) {
+  if (!(await confirmar('Excluir roteiro', `Apagar "${meta.titulo}" para todos? Não dá para desfazer.`, 'Excluir', true))) return;
+  try {
+    const s = await getDocs(query(collection(db, 'roteiro_paginas'), where('roteiroId', '==', meta.id)));
+    const ids = s.docs.map((d) => d.id);
+    for (let i = 0; i < ids.length; i += TAMANHO_LOTE_ESCRITA) {
+      const b = writeBatch(db);
+      ids.slice(i, i + TAMANHO_LOTE_ESCRITA).forEach((pid) => b.delete(doc(db, 'roteiro_paginas', pid)));
+      await b.commit();
+    }
+    await deleteDoc(doc(db, 'roteiros', meta.id));
+    estado.rot.id = null; estado.rot.paginas = null; estado.rot.chave = '';
+    aviso('Roteiro excluído.');
+  } catch (e) { console.error('excluir roteiro', e?.code || e); aviso('Não consegui excluir.', 'erro'); }
 }
 
 // ---------- IMPORTAR (admin) ----------
@@ -1166,7 +1539,7 @@ function viewEquipe() {
     h('td', { text: u.lojaId ? nomeLoja(u.lojaId) : '—' }),
     h('td', {}, h('span', { class: `tag ${u.ativo ? 'venda' : 'perdido'}`, text: u.ativo ? 'Ativo' : 'Inativo' }), u.mustChange ? [' ', h('span', { class: 'tag alerta', text: 'Não entrou ainda' })] : null),
     h('td', {}, L.podeGerenciar({ ...me, ativo: true }, u) ? h('button', { class: 'btn sec peq', onclick: () => redefinirSenha(u), text: 'Redefinir senha' }) : null,
-      ehAdmin() ? [' ', h('button', { class: 'btn sec peq', onclick: () => alternarAtivo(u), text: u.ativo ? 'Desativar' : 'Ativar' })] : null)));
+      ehAdmin() ? [' ', h('button', { class: 'btn sec peq', onclick: () => abrirEditarUsuario(u), text: 'Editar' }), ' ', h('button', { class: 'btn sec peq', onclick: () => alternarAtivo(u), text: u.ativo ? 'Desativar' : 'Ativar' })] : null)));
   return h('div', {}, h('div', { class: 'cartao' }, h('h2', { text: 'Equipe' }), cab,
     linhas.length ? h('div', { class: 'tabela-wrap' }, h('table', {},
       h('thead', {}, h('tr', {}, ['Nome', 'Usuário', 'Cargo', 'Loja', 'Situação', ''].map((t) => h('th', { text: t })))), h('tbody', {}, linhas))) : h('p', { class: 'vazio', text: 'Ninguém cadastrado ainda.' })));
@@ -1176,6 +1549,54 @@ async function alternarAtivo(u) {
   const novo = !u.ativo;
   if (!(await confirmar(novo ? 'Ativar usuário' : 'Desativar usuário', `${novo ? 'Liberar' : 'Bloquear'} o acesso de ${u.nome}?`, novo ? 'Ativar' : 'Desativar', !novo))) return;
   try { await updateDoc(doc(db, 'usuarios', u._uid), { ativo: novo }); aviso(novo ? 'Usuário ativado.' : 'Usuário desativado.'); } catch (e) { console.error('ativo', e?.code || e); aviso('Não consegui alterar.', 'erro'); }
+}
+
+function abrirEditarUsuario(u) {
+  const nome = h('input', { type: 'text', required: true, maxlength: '80', value: u.nome });
+  const role = h('select', {}, ['consultor', 'supervisor', 'diretor'].map((r) => h('option', { value: r, text: L.PAPEIS[r], selected: u.role === r })));
+  const loja = h('select', {}, lojasAtivas().map((l) => h('option', { value: l.id, text: l.nome, selected: u.lojaId === l.id })));
+  const erro = h('div', { class: 'erro', hidden: true, role: 'alert' });
+  const blocoLoja = h('div', {}, campo('Loja', loja));
+  blocoLoja.hidden = role.value === 'diretor';
+  role.addEventListener('change', () => { blocoLoja.hidden = role.value === 'diretor'; });
+  const botao = h('button', { class: 'btn', text: 'Salvar' });
+  let m;
+  botao.addEventListener('click', async () => {
+    erro.hidden = true;
+    const n = L.tituloNome(nome.value);
+    if (n.length < 2) { erro.textContent = 'Informe o nome.'; erro.hidden = false; return; }
+    const novoRole = role.value;
+    const novaLoja = novoRole === 'diretor' ? null : loja.value;
+    if (novoRole !== 'diretor' && !novaLoja) { erro.textContent = 'Escolha a loja.'; erro.hidden = false; return; }
+    const mudancas = {};
+    if (n !== u.nome) mudancas.nome = n;
+    if (novoRole !== u.role) mudancas.role = novoRole;
+    if ((novaLoja || null) !== (u.lojaId || null)) mudancas.lojaId = novaLoja;
+    if (!Object.keys(mudancas).length) { m.fechar(); return; }
+    const outroSup = estado.usuarios.find((x) => x.role === 'supervisor' && x.lojaId === novaLoja && x.ativo && x._uid !== u._uid);
+    if (novoRole === 'supervisor' && outroSup && !(await confirmar('Loja já tem supervisor', `${nomeLoja(novaLoja)} já tem ${outroSup.nome}. Salvar mesmo assim?`, 'Salvar'))) return;
+    // consultor que muda de loja leva os leads dele junto (senão ficariam presos na loja antiga)
+    const meusLeads = u.role === 'consultor' && 'lojaId' in mudancas && novoRole === 'consultor' ? leadsLista().filter((l) => l.consultorId === u.id) : [];
+    if (('role' in mudancas) && u.role === 'consultor' && leadsLista().some((l) => l.consultorId === u.id)) {
+      if (!(await confirmar('Mudar de cargo', `${u.nome} tem leads no nome dele. Eles continuam com ele depois da mudança. Salvar?`, 'Salvar'))) return;
+    }
+    if (meusLeads.length && !(await confirmar('Mudar de loja', `Os ${meusLeads.length} leads de ${u.nome} vão junto para ${nomeLoja(novaLoja)}. Salvar?`, 'Salvar'))) return;
+    botao.disabled = true;
+    try {
+      await gravarEmLotes([[doc(db, 'usuarios', u._uid), mudancas, 'update'], ...meusLeads.map((l) => [doc(db, 'leads', l.id), { lojaId: novaLoja }, 'update'])]);
+      m.fechar();
+      aviso('Usuário atualizado.');
+    } catch (e) {
+      console.error('editar usuário', e?.code || e);
+      erro.textContent = 'Não consegui salvar. Tente de novo.';
+      erro.hidden = false;
+      botao.disabled = false;
+    }
+  });
+  m = abrirModal('Editar usuário', h('div', {},
+    campo('Nome completo', nome), campo('Cargo', role), blocoLoja,
+    campo('Usuário (para entrar)', h('input', { type: 'text', value: u.usuario, disabled: true }), 'O usuário não muda, porque os leads ficam ligados a ele. Para trocar, cadastre uma pessoa nova.'),
+    erro, h('div', { class: 'acoes' }, botao)));
 }
 
 function abrirNovoUsuario() {
@@ -1293,12 +1714,32 @@ function viewCadastros() {
   const alternar = async (colecao, item) => {
     try { await updateDoc(doc(db, colecao, item.id), { ativo: item.ativo === false }); } catch (e) { console.error('alternar', e?.code || e); aviso('Não consegui alterar.', 'erro'); }
   };
-  const lista = (colecao, itens) => h('ul', { style: 'list-style:none;padding:0;margin:12px 0 0' }, itens.map((i) => h('li', { style: 'display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--linha)' },
+  const editar = (colecao, item, rotulo) => {
+    const nome = h('input', { type: 'text', maxlength: colecao === 'produtos' ? '40' : '60', value: item.nome });
+    const erro = h('div', { class: 'erro', hidden: true, role: 'alert' });
+    const salvar = h('button', { class: 'btn', text: 'Salvar' });
+    let m;
+    salvar.addEventListener('click', async () => {
+      erro.hidden = true;
+      const n = L.limparTexto(nome.value);
+      const outros = colecao === 'produtos' ? estado.produtos : estado.lojas;
+      if (n.length < 2) { erro.textContent = `Informe o nome ${rotulo === 'produto' ? 'do produto' : 'da loja'}.`; erro.hidden = false; return; }
+      if (outros.some((o) => o.id !== item.id && L.slug(o.nome) === L.slug(n))) { erro.textContent = `Já existe ${rotulo === 'produto' ? 'um produto' : 'uma loja'} com esse nome.`; erro.hidden = false; return; }
+      if (n === item.nome) { m.fechar(); return; }
+      salvar.disabled = true;
+      try { await updateDoc(doc(db, colecao, item.id), { nome: n }); m.fechar(); aviso('Nome atualizado.'); } catch (e) {
+        console.error('editar', e?.code || e); erro.textContent = 'Não consegui salvar. Tente de novo.'; erro.hidden = false; salvar.disabled = false;
+      }
+    });
+    m = abrirModal(`Editar ${rotulo}`, h('div', {}, campo('Nome', nome, 'Só muda o nome que aparece na tela. Os leads e o histórico continuam ligados.'), erro, h('div', { class: 'acoes' }, salvar)));
+  };
+  const lista = (colecao, itens, rotulo) => h('ul', { style: 'list-style:none;padding:0;margin:12px 0 0' }, itens.map((i) => h('li', { style: 'display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--linha)' },
     h('span', { style: 'flex:1', text: i.nome }), h('span', { class: `tag ${i.ativo === false ? 'perdido' : 'venda'}`, text: i.ativo === false ? 'Inativo' : 'Ativo' }),
+    h('button', { class: 'btn sec peq', onclick: () => editar(colecao, i, rotulo), text: 'Editar' }),
     h('button', { class: 'btn sec peq', onclick: () => alternar(colecao, i), text: i.ativo === false ? 'Ativar' : 'Desativar' }))));
   return h('div', {},
-    h('div', { class: 'cartao' }, h('h2', { text: 'Produtos' }), h('div', { class: 'linha' }, nomeProd, h('div', { class: 'fixo' }, h('button', { class: 'btn', onclick: addProd, text: 'Adicionar' }))), lista('produtos', estado.produtos)),
-    h('div', { class: 'cartao' }, h('h2', { text: 'Lojas' }), h('div', { class: 'linha' }, nomeLojaNova, h('div', { class: 'fixo' }, h('button', { class: 'btn', onclick: addLoja, text: 'Adicionar' }))), lista('lojas', estado.lojas)));
+    h('div', { class: 'cartao' }, h('h2', { text: 'Produtos' }), h('div', { class: 'linha' }, nomeProd, h('div', { class: 'fixo' }, h('button', { class: 'btn', onclick: addProd, text: 'Adicionar' }))), lista('produtos', estado.produtos, 'produto')),
+    h('div', { class: 'cartao' }, h('h2', { text: 'Lojas' }), h('div', { class: 'linha' }, nomeLojaNova, h('div', { class: 'fixo' }, h('button', { class: 'btn', onclick: addLoja, text: 'Adicionar' }))), lista('lojas', estado.lojas, 'loja')));
 }
 
 iniciar();

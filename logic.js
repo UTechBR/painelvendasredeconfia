@@ -9,11 +9,14 @@ export const PAPEIS = {
 };
 
 export const STATUS = [
-  { id: 'novo', nome: 'Novo' },
-  { id: 'atendimento', nome: 'Em atendimento' },
-  { id: 'proposta', nome: 'Proposta enviada' },
-  { id: 'venda', nome: 'Venda fechada' },
-  { id: 'perdido', nome: 'Sem venda' },
+  { id: 'novo', nome: 'Não contatado', desc: 'Lead novo: ninguém tentou falar com o cliente ainda.' },
+  { id: 'semcontato', nome: 'Não atendeu', desc: 'Você ligou ou mandou mensagem e o cliente não respondeu.' },
+  { id: 'atendimento', nome: 'Em conversa', desc: 'Você já falou com o cliente e a negociação está andando.' },
+  { id: 'retornar', nome: 'Retorno agendado', desc: 'O cliente pediu para conversar em outro dia ou horário (ligação ou WhatsApp). Marque o dia e a hora.' },
+  { id: 'proposta', nome: 'Proposta enviada', desc: 'Você já mandou a simulação e espera a resposta do cliente.' },
+  { id: 'aguardando', nome: 'Aguardando documentos', desc: 'O cliente aceitou e falta enviar documento, assinatura ou link.' },
+  { id: 'venda', nome: 'Vendido', desc: 'Venda concluída. Exige a data da venda e as 3 indicações.' },
+  { id: 'perdido', nome: 'Perdido', desc: 'O cliente não vai fechar. Informe o motivo.' },
 ];
 
 export const TOTAL_INDICACOES = 3;
@@ -506,6 +509,30 @@ export function montarRelatorio(leads, { produtoId = '', loteId = '' } = {}) {
       .map(([id, c]) => ({ id, lojaId: c.lojaId, ...comConv(c.total), indic: c.indic }))
       .sort(porConv),
   };
+}
+
+// ---------- ranking ----------
+// chave: 'lojaId' (ranking de lojas) ou 'consultorId' (ranking de consultores).
+// itens: ids que entram no ranking (mesmo sem vendas). desde: 'AAAA-MM-DD' (só conta vendas dessa data em diante) ou ''.
+// Ordem: mais vendas; empate -> maior conversão; empate -> mais leads. Quem empata em tudo divide a posição.
+export function montarRanking(leads, { chave, itens, produtoId = '', desde = '' }) {
+  const mapa = new Map(itens.map((id) => [id, { id, leads: 0, vendas: 0 }]));
+  for (const l of leads) {
+    if (l.indicacao || !l.lojaId || !l[chave]) continue;
+    if (produtoId && l.produtoId !== produtoId) continue;
+    const t = mapa.get(l[chave]);
+    if (!t) continue;
+    t.leads++;
+    if (l.status === 'venda' && (!desde || (l.vendaEm || '') >= desde)) t.vendas++;
+  }
+  const lista = [...mapa.values()].map((t) => ({ ...t, conv: conversao(t.vendas, t.leads) }))
+    .sort((a, b) => b.vendas - a.vendas || (b.conv ?? -1) - (a.conv ?? -1) || b.leads - a.leads);
+  let pos = 0;
+  return lista.map((t, i) => {
+    const ant = lista[i - 1];
+    if (!ant || ant.vendas !== t.vendas || (ant.conv ?? -1) !== (t.conv ?? -1) || ant.leads !== t.leads) pos = i + 1;
+    return { ...t, posicao: pos };
+  });
 }
 
 export function contarStatus(leads) {
