@@ -228,7 +228,13 @@ function textoOferta(linha, cabNorm) {
   return `${produto}${partes.length ? ` (${partes.join(', ')})` : ''}`;
 }
 
-export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = new Set() }) {
+export const DIAS_BLOQUEIO = 30;
+const MS_DIA = 86400000;
+
+// ultimaEntrada: Map(idBase -> momento (ms) em que o CPF entrou por último nesse produto).
+// Dentro de DIAS_BLOQUEIO dias o CPF não entra de novo; depois disso entra como um lead novo
+// (id com sufixo do lote), sem apagar nem sobrescrever o lead antigo.
+export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = new Set(), ultimaEntrada = new Map(), agora = Date.now() }) {
   if (!linhas.length) throw new Error('A planilha está vazia.');
   const cab = linhas[0];
   const col = detectarColunas(cab);
@@ -243,7 +249,7 @@ export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = 
   const leads = [];
   const ignorados = [];
   const vistos = new Set();
-  const resumo = { lidas: 0, validas: 0, cpfInvalido: 0, semNome: 0, duplicadasNoArquivo: 0, jaExistem: 0, ofertasUnidas: 0 };
+  const resumo = { lidas: 0, validas: 0, cpfInvalido: 0, semNome: 0, duplicadasNoArquivo: 0, jaExistem: 0, ofertasUnidas: 0, reentradas: 0 };
   const porId = new Map();
 
   for (let i = 1; i < linhas.length; i++) {
@@ -254,7 +260,8 @@ export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = 
     resumo.lidas++;
     if (nome.length < 2) { resumo.semNome++; ignorados.push({ linha: i + 1, motivo: 'sem nome' }); continue; }
     if (!cpfValido(cpf)) { resumo.cpfInvalido++; ignorados.push({ linha: i + 1, motivo: 'CPF inválido' }); continue; }
-    const id = idLead(produtoId, cpf);
+    const idBase = idLead(produtoId, cpf);
+    const id = idBase;
     if (vistos.has(id) && produtoId === 'cnc' && porId.has(id) && col.nome >= 0 && cabNorm.includes('produto')) {
       const base = porId.get(id);
       const outras = [base.extras['Outras ofertas'], textoOferta(l, cabNorm)].filter(Boolean).join(' | ');
@@ -264,7 +271,15 @@ export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = 
     }
     if (vistos.has(id)) { resumo.duplicadasNoArquivo++; ignorados.push({ linha: i + 1, motivo: 'CPF repetido no arquivo' }); continue; }
     vistos.add(id);
-    if (existentes.has(id)) { resumo.jaExistem++; ignorados.push({ linha: i + 1, motivo: 'já existe nesse produto' }); continue; }
+    let idFinal = idBase;
+    if (existentes.has(idBase) || ultimaEntrada.has(idBase)) {
+      const quando = ultimaEntrada.get(idBase);
+      if (!Number.isFinite(quando) || agora - quando < DIAS_BLOQUEIO * MS_DIA) {
+        resumo.jaExistem++; ignorados.push({ linha: i + 1, motivo: `já entrou nesse produto há menos de ${DIAS_BLOQUEIO} dias` }); continue;
+      }
+      idFinal = `${idBase}_${loteId}`;
+      resumo.reentradas++;
+    }
     const extras = {};
     for (const { idx, rotulo, formato } of extrasUsados) {
       const v = formatarExtra(l[idx], formato);
@@ -277,7 +292,7 @@ export function prepararLeads(linhas, { produtoId, loteId, origem, existentes = 
     const telefone = col.tel >= 0 ? normalizarTelefone(l[col.tel]) : '';
     if (telBruto && !/^0+$/.test(telBruto) && !telefone) extras['Telefone (sem DDD)'] = telBruto;
     const lead = {
-      id, nome, cpf,
+      id: idFinal, nome, cpf,
       telefone,
       produtoId, loteId, origem, extras,
       ord: leads.length,

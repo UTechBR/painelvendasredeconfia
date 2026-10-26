@@ -1028,8 +1028,16 @@ function viewImportar() {
       const linhas = await lerArquivoTabela(arq);
       if (assinatura !== ultimaAssinatura) return; // outra análise começou depois desta
       const existentes = new Set(leadsLista().map((l) => l.id));
+      // quando cada CPF entrou por último, por produto (sem data confiável = conta como "agora")
+      const ultimaEntrada = new Map();
+      for (const l of leadsLista()) {
+        if (!l.produtoId || !l.cpf) continue;
+        const ms = typeof l.criadoEm?.toMillis === 'function' ? l.criadoEm.toMillis() : Date.now();
+        const k = L.idLead(l.produtoId, l.cpf);
+        if (!(ultimaEntrada.get(k) >= ms)) ultimaEntrada.set(k, ms);
+      }
       const loteId = `l${Date.now().toString(36)}`;
-      const r = L.prepararLeads(linhas, { produtoId: produto.value, loteId, origem: org, existentes });
+      const r = L.prepararLeads(linhas, { produtoId: produto.value, loteId, origem: org, existentes, ultimaEntrada });
       novoPreparado = { ...r, loteId, origem: org, produtoId: produto.value };
       const rs = r.resumo;
       novoConteudo.push(
@@ -1041,7 +1049,8 @@ function viewImportar() {
             rs.semNome ? h('li', { text: `${rs.semNome} sem nome (ignorados)` }) : null,
             rs.duplicadasNoArquivo ? h('li', { text: `${rs.duplicadasNoArquivo} CPF repetido no arquivo (ignorados)` }) : null,
             rs.ofertasUnidas ? h('li', { text: `${rs.ofertasUnidas} linha(s) com CPF repetido: as ofertas foram unidas no mesmo lead` }) : null,
-            rs.jaExistem ? h('li', { text: `${rs.jaExistem} já existem nesse produto (ignorados)` }) : null),
+            rs.jaExistem ? h('li', { text: `${rs.jaExistem} já entraram nesse produto há menos de ${L.DIAS_BLOQUEIO} dias (ignorados)` }) : null,
+            rs.reentradas ? h('li', { text: `${rs.reentradas} já estavam na base há mais de ${L.DIAS_BLOQUEIO} dias e entram de novo como lead novo` }) : null),
           r.ignorados.length ? h('details', {}, h('summary', { text: 'Ver linhas ignoradas' }), h('ul', {}, r.ignorados.slice(0, 50).map((i) => h('li', { text: `Linha ${i.linha}: ${i.motivo}` })), r.ignorados.length > 50 ? h('li', { text: `… e mais ${r.ignorados.length - 50}` }) : null)) : null,
           h('div', { style: 'display:flex;justify-content:flex-end;margin-top:12px' },
             h('button', { class: 'btn', disabled: !rs.validas, text: `Importar ${rs.validas} leads`, onclick: (e) => importar(e.target) }))));
@@ -1073,7 +1082,9 @@ function viewImportar() {
       telaApp();
     } catch (e) {
       console.error('importar', e?.code || e);
-      aviso('A importação falhou no meio. Importe o mesmo arquivo de novo: o que já entrou é ignorado.', 'erro');
+      aviso(String(e?.code).includes('permission-denied')
+        ? 'Alguns CPFs acabaram de ser importados por outra pessoa. Recarregue a página e importe de novo: o que já entrou é ignorado.'
+        : 'A importação falhou no meio. Importe o mesmo arquivo de novo: o que já entrou é ignorado.', 'erro');
       botao.disabled = false;
     }
   }
