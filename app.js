@@ -963,6 +963,7 @@ function abrirFicha(leadId) {
         }
       }
       m.fechar();
+      if (sel.status === 'venda' && lead.status !== 'venda') celebrarVenda(); // só na virada para Vendido, não ao editar uma venda que já estava fechada
       if (!indicacoesNovas) aviso('Lead atualizado.');
       else if (!jaExistiam) aviso('Venda registrada. As 3 indicações viraram novos leads.');
       else aviso(`Venda registrada. ${criadas} indicação(ões) viraram leads; ${jaExistiam} já estava(m) na base e não foi(ram) duplicada(s).`);
@@ -982,6 +983,71 @@ function abrirFicha(leadId) {
   if (histLista.length) corpo.append(blocoHistorico(histLista));
   corpo.append(h('div', { class: 'acoes' }, h('button', { class: 'btn sec', onclick: () => m.fechar(), text: 'Cancelar' }), botaoSalvar));
   m = abrirModal(lead.nome, corpo);
+}
+
+// ---------- comemoração de venda fechada: foguete, fogos e confete (não bloqueia a tela) ----------
+function celebrarVenda() {
+  if (document.getElementById('celebra')) return;
+  const reduz = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const nome = (estado.me?.nome || '').split(' ')[0];
+  const cv = h('canvas', { 'aria-hidden': 'true' });
+  const card = h('div', { class: 'cel-card', role: 'status' },
+    h('div', { class: 'c1', text: '🚀 Decolou!' }), h('div', { class: 'c2', text: 'VENDA FECHADA!' }),
+    h('div', { class: 'c4', text: `${nome ? `Parabéns, ${nome}! ` : 'Parabéns! '}Mais um cliente atendido 👏` }));
+  const ov = h('div', { id: 'celebra' }, cv, card);
+  document.body.append(ov);
+  const fim = () => { ov.classList.add('sai'); setTimeout(() => ov.remove(), 700); };
+  requestAnimationFrame(() => card.classList.add('on'));
+  if (reduz) { setTimeout(fim, 2600); return; } // quem pediu menos movimento vê só o cartão
+
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = innerWidth; const H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const cx = cv.getContext('2d'); cx.scale(dpr, dpr);
+  const CORES = ['#f59e0b', '#ef4444', '#3b82f6', '#10b981', '#a855f7', '#ec4899', '#facc15', '#22d3ee'];
+  const R = (a, b) => a + Math.random() * (b - a);
+  const P = [];
+  const cor = () => CORES[(Math.random() * CORES.length) | 0];
+  const confete = (x, y, vx, vy) => P.push({ t: 'c', x, y, vx, vy, r: R(0, 6.28), vr: R(-0.3, 0.3), w: R(6, 11), h: R(4, 7), c: cor(), vida: R(2200, 3600), nasc: performance.now() });
+  const fagulha = (x, y, c) => { const a = R(0, 6.28); const v = R(2, 7.5); P.push({ t: 's', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, c, vida: R(700, 1300), nasc: performance.now() }); };
+  const fogo = (x, y) => {
+    const c1 = cor(); const c2 = cor();
+    for (let i = 0; i < 70; i++) fagulha(x, y, i % 3 ? c1 : c2);
+    for (let i = 0; i < 40; i++) { const a = R(0, 6.28); const v = R(2, 9); confete(x, y, Math.cos(a) * v, Math.sin(a) * v - 2); }
+  };
+  const canhao = (x, dir) => { for (let i = 0; i < 55; i++) { const a = -Math.PI / 2 + dir * R(0.15, 0.9); const v = R(9, 19); confete(x, H + 10, Math.cos(a) * v, Math.sin(a) * v); } };
+  const rx = W / 2; const ry0 = H + 30; const ry1 = H * 0.26;
+  let canhoes = false; let explodiu = false; const extra = [false, false];
+  const ini = performance.now();
+  const quadro = () => {
+    const agora = performance.now(); const e = agora - ini;
+    cx.clearRect(0, 0, W, H);
+    if (!canhoes) { canhoes = true; canhao(0, 1); canhao(W, -1); }
+    if (e < 1000) { // foguete sobe com rastro de fogo
+      const k = e / 1000; const y = ry0 + (ry1 - ry0) * k * k; const x = rx + Math.sin(e / 60) * 4;
+      for (let i = 0; i < 4; i++) P.push({ t: 'f', x: x + R(-5, 5), y: y + 22, vx: R(-1, 1), vy: R(2, 5), c: i % 2 ? '#f59e0b' : '#fde047', vida: R(300, 600), nasc: agora });
+      cx.save(); cx.translate(x, y); cx.rotate(-Math.PI / 4); cx.font = '46px serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText('🚀', 0, 0); cx.restore();
+    } else if (!explodiu) { explodiu = true; fogo(rx, ry1); }
+    if (e > 1250 && !extra[0]) { extra[0] = true; fogo(W * 0.25, H * 0.3); }
+    if (e > 1500 && !extra[1]) { extra[1] = true; fogo(W * 0.75, H * 0.34); }
+    if (e > 1100 && e < 2600 && Math.random() < 0.7) confete(R(0, W), -12, R(-1.5, 1.5), R(1, 3));
+    for (let i = P.length - 1; i >= 0; i--) {
+      const q = P[i]; const idade = agora - q.nasc;
+      if (idade > q.vida) { P.splice(i, 1); continue; }
+      const f = 1 - idade / q.vida;
+      if (q.t === 'c') {
+        q.vx *= 0.985; q.vy = q.vy * 0.985 + 0.28; q.x += q.vx; q.y += q.vy; q.r += q.vr;
+        cx.save(); cx.globalAlpha = Math.min(1, f * 2); cx.translate(q.x, q.y); cx.rotate(q.r); cx.scale(1, Math.cos(q.r * 1.7)); cx.fillStyle = q.c; cx.fillRect(-q.w / 2, -q.h / 2, q.w, q.h); cx.restore();
+      } else {
+        q.vx *= 0.96; q.vy = q.vy * 0.96 + (q.t === 's' ? 0.12 : -0.02); q.x += q.vx; q.y += q.vy;
+        cx.globalAlpha = f; cx.fillStyle = q.c; cx.beginPath(); cx.arc(q.x, q.y, q.t === 's' ? 2.4 : 3 * f + 1, 0, 6.28); cx.fill(); cx.globalAlpha = 1;
+      }
+    }
+    if (e > 4600) P.length = 0;
+    if ((e < 4200 || P.length > 0) && ov.isConnected && !ov.classList.contains('sai')) requestAnimationFrame(quadro);
+  };
+  requestAnimationFrame(quadro);
+  setTimeout(fim, 4000);
 }
 
 function blocoHistorico(itens) {
