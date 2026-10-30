@@ -27,7 +27,7 @@ const estado = {
   produtos: [], lojas: [], usuarios: [], lotes: [],
   leadsMap: new Map(), leadsCache: null, leadsPronto: false,
   aba: 'leads',
-  f: { status: '', produto: '', consultor: '', loja: '', busca: '', limite: LINHAS_POR_PAGINA },
+  f: { status: '', produto: '', consultor: '', loja: '', busca: '', dataTipo: 'chegada', de: '', ate: '', limite: LINHAS_POR_PAGINA },
   dist: { modo: 'lojas', loja: '', lote: '', plano: {} },
   rel: { produto: '', lote: '' },
   rank: { produto: '', periodo: 'mes', modo: 'lojas' },
@@ -729,7 +729,7 @@ function leadsFiltrados(ignorarStatus = false) {
   const f = estado.f;
   const busca = L.semAcento(f.busca).toLowerCase().trim();
   const buscaNum = L.soDigitos(f.busca);
-  return leadsLista().filter((l) => {
+  return L.filtrarPorData(leadsLista(), { tipo: f.dataTipo, de: f.de, ate: f.ate, papel: estado.me.role }).filter((l) => {
     if (f.produto && l.produtoId !== f.produto) return false;
     if (f.loja && (f.loja === '_sem' ? l.lojaId : l.lojaId !== f.loja)) return false;
     if (f.consultor && (f.consultor === '_sem' ? l.consultorId : l.consultorId !== f.consultor)) return false;
@@ -779,6 +779,22 @@ function viewLeads() {
       h('option', { value: '', text: 'Todos' }), h('option', { value: '_sem', text: 'Sem consultor', selected: f.consultor === '_sem' }),
       consultores.map((u) => h('option', { value: u.id, text: u.nome, selected: f.consultor === u.id })))));
   }
+  const mudarData = (campo, valor) => { f[campo] = valor; f.limite = LINHAS_POR_PAGINA; renderConteudo(); };
+  const periodo = (de, ate) => { f.de = de; f.ate = ate; f.limite = LINHAS_POR_PAGINA; renderConteudo(); };
+  const hojeIso = hoje();
+  const dataFiltros = [
+    h('div', {}, h('label', { text: 'Data' }), h('select', { 'aria-label': 'Filtrar data por', onchange: (e) => mudarData('dataTipo', e.target.value) },
+      L.TIPOS_DATA.map((t) => h('option', { value: t.id, text: t.nome, selected: f.dataTipo === t.id })))),
+    h('div', {}, h('label', { text: 'De' }), h('input', { type: 'date', 'aria-label': 'Data inicial', value: f.de, max: f.ate || null, onchange: (e) => mudarData('de', e.target.value) })),
+    h('div', {}, h('label', { text: 'Até' }), h('input', { type: 'date', 'aria-label': 'Data final', value: f.ate, min: f.de || null, onchange: (e) => mudarData('ate', e.target.value) })),
+    h('div', { class: 'atalhos-data' },
+      h('button', { class: 'btn sec peq', type: 'button', text: 'Hoje', onclick: () => periodo(hojeIso, hojeIso) }),
+      h('button', { class: 'btn sec peq', type: 'button', text: '7 dias', onclick: () => periodo(L.diaLocal(Date.now() - 6 * 86400000), hojeIso) }),
+      h('button', { class: 'btn sec peq', type: 'button', text: 'Este mês', onclick: () => periodo(`${hojeIso.slice(0, 8)}01`, hojeIso) }),
+      f.de || f.ate ? h('button', { class: 'btn sec peq', type: 'button', text: 'Limpar datas', onclick: () => periodo('', '') }) : null),
+  ];
+  const comData = Boolean(f.de || f.ate);
+  const nomeData = L.TIPOS_DATA.find((t) => t.id === f.dataTipo)?.nome || 'Data';
   const duplicados = (!ehConsultor()) ? chavesDuplicadas() : new Set();
   const mostrar = lista.slice(0, f.limite);
   const mostrarLoja = verTudo();
@@ -787,7 +803,7 @@ function viewLeads() {
   const tabela = lista.length ? h('div', { class: 'tabela-wrap' }, h('table', {},
     h('thead', {}, h('tr', {},
       h('th', { text: 'Nome' }), h('th', { text: 'CPF' }), h('th', { text: 'Produto' }), h('th', { text: 'Origem' }),
-      mostrarLoja ? h('th', { text: 'Loja' }) : null, mostrarConsultor ? h('th', { text: 'Consultor' }) : null, h('th', { text: 'Situação' }))),
+      mostrarLoja ? h('th', { text: 'Loja' }) : null, mostrarConsultor ? h('th', { text: 'Consultor' }) : null, comData ? h('th', { text: nomeData }) : null, h('th', { text: 'Situação' }))),
     h('tbody', {}, mostrar.map((l) => h('tr', { class: 'clic', tabindex: '0', onclick: () => abrirFicha(l.id), onkeydown: (e) => { if (e.key === 'Enter') abrirFicha(l.id); } },
       h('td', {}, l.nome, duplicados.has(`${l.produtoId}_${l.cpf}`) ? [' ', h('span', { class: 'tag alerta', text: 'CPF repetido' })] : null),
       h('td', { text: L.mascararCpf(l.cpf) }),
@@ -795,11 +811,12 @@ function viewLeads() {
       h('td', { text: l.origem || '' }),
       mostrarLoja ? h('td', { text: l.lojaId ? nomeLoja(l.lojaId) : 'A distribuir' }) : null,
       mostrarConsultor ? h('td', { text: l.consultorId ? nomeUsuario(l.consultorId) : '—' }) : null,
+      comData ? h('td', { text: dataBr(L.diaDoLead(l, f.dataTipo, estado.me.role)) }) : null,
       h('td', {}, h('span', { class: `tag ${l.status}`, text: rotuloLead(l) })))))))
     : (estado.leadsPronto ? h('p', { class: 'vazio', text: 'Nenhum lead por aqui.' }) : carregandoLogo('Carregando leads…'));
 
   return h('div', {}, cards,
-    h('div', { class: 'cartao' }, h('div', { class: 'linha' }, filtros),
+    h('div', { class: 'cartao' }, h('div', { class: 'linha' }, filtros), h('div', { class: 'linha', style: 'margin-top:12px' }, dataFiltros),
       ehAdmin() ? h('div', { style: 'margin-top:12px' }, h('button', { class: 'btn sec peq', onclick: () => exportarLeads(lista), text: `Exportar ${lista.length} leads (CSV)` })) : null),
     h('div', { class: 'cartao' }, tabela,
       lista.length > mostrar.length ? h('p', {}, h('button', { class: 'btn sec', onclick: () => { f.limite += LINHAS_POR_PAGINA; renderConteudo(); }, text: `Mostrar mais (${lista.length - mostrar.length} restantes)` })) : null));

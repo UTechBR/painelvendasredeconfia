@@ -592,3 +592,33 @@ export function pendenciasGerente(leads, { agora = Date.now() } = {}) {
     return { ...g, dias, nivel: dias >= DIAS_ALERTA_VERMELHO ? 'vermelho' : 'amarelo' };
   }).sort((a, b) => a.desde - b.desde || b.semLoja - a.semLoja);
 }
+
+// ---------- filtro de data da lista de leads ----------
+export const TIPOS_DATA = [
+  { id: 'chegada', nome: 'Chegada' },
+  { id: 'atualizacao', nome: 'Última atualização' },
+  { id: 'venda', nome: 'Venda' },
+  { id: 'retorno', nome: 'Retorno agendado' },
+];
+
+export const diaLocal = (ms) => new Date(ms).toLocaleDateString('sv-SE'); // AAAA-MM-DD no fuso do aparelho
+
+// Dia (AAAA-MM-DD) do lead para o tipo escolhido. "Chegada" é quando o lead chegou para quem está olhando:
+// consultor = passado a ele; supervisor = enviado à loja; admin e gerente geral = importado.
+export function diaDoLead(l, tipo, papel = '') {
+  const doTempo = (v) => { const ms = msDe(v); return ms === null ? null : diaLocal(ms); };
+  const doTexto = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+  if (tipo === 'atualizacao') return doTempo(l.atualizadoEm);
+  if (tipo === 'venda') return doTexto(l.vendaEm);
+  if (tipo === 'retorno') return doTexto(l.retornarEm);
+  const ordem = papel === 'consultor' ? [l.atribuidoEm, l.enviadoEm, l.criadoEm] : papel === 'supervisor' ? [l.enviadoEm, l.criadoEm] : [l.criadoEm];
+  for (const v of ordem) { const d = doTempo(v); if (d) return d; }
+  return null;
+}
+
+// de / ate são AAAA-MM-DD (inclusivos); vazio = sem limite. Lead sem a data pedida fica de fora.
+export function filtrarPorData(leads, { tipo = 'chegada', de = '', ate = '', papel = '' } = {}) {
+  if (!de && !ate) return leads;
+  const [ini, fim] = de && ate && de > ate ? [ate, de] : [de, ate];
+  return leads.filter((l) => { const d = diaDoLead(l, tipo, papel); return d && (!ini || d >= ini) && (!fim || d <= fim); });
+}
