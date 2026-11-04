@@ -867,8 +867,10 @@ function abrirFicha(leadId) {
   }
 
   const sel = { status: lead.status };
+  const nInd = L.indicacoesExigidas(lead.produtoId); // CNC: 1 indicação; demais produtos: 3
+  const descDoLead = (id) => (id === 'venda' ? L.descVenda(lead.produtoId) : descStatus(id));
   const botoesStatus = L.STATUS.map((s) => h('button', {
-    type: 'button', 'aria-pressed': String(sel.status === s.id), 'data-status': s.id, 'data-desc': s.desc, class: 'dica-card',
+    type: 'button', 'aria-pressed': String(sel.status === s.id), 'data-status': s.id, 'data-desc': descDoLead(s.id), class: 'dica-card',
     onclick: () => { sel.status = s.id; botoesStatus.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.status === s.id))); atualizarCampos(); },
     text: s.nome,
   }));
@@ -881,8 +883,8 @@ function abrirFicha(leadId) {
   const blocoRetorno = h('div', {}, h('div', { class: 'linha' }, campo('Dia (obrigatório)', dataRetorno), campo('Hora (obrigatório)', horaRetorno)),
     h('p', { class: 'dica', text: 'Na hora marcada o painel mostra um aviso (com o painel aberto no navegador, mesmo em outra aba).' }));
   const textoStatus = h('p', { class: 'dica', 'aria-live': 'polite' });
-  const jaTinhaIndic = (lead.indicacoes || []).length >= L.TOTAL_INDICACOES;
-  const itensInd = Array.from({ length: L.TOTAL_INDICACOES }, (_, i) => {
+  const jaTinhaIndic = (lead.indicacoes || []).length >= nInd;
+  const itensInd = Array.from({ length: nInd }, (_, i) => {
     const ex = (lead.indicacoes || [])[i] || {};
     return {
       nome: h('input', { type: 'text', maxlength: '120', placeholder: 'Nome', 'aria-label': `Indicação ${i + 1}: nome`, value: ex.nome || '' }),
@@ -893,15 +895,15 @@ function abrirFicha(leadId) {
   });
   const blocoVenda = h('div', {},
     campo('Data da venda', dataVenda),
-    h('div', { class: 'indic' }, h('b', { text: `Quem mais esse cliente indica? Informe ${L.TOTAL_INDICACOES} pessoas (nome e CPF).` }),
-      h('p', { class: 'dica', text: 'Elas viram novos leads para você trabalhar.' }),
+    h('div', { class: 'indic' }, h('b', { text: nInd === 1 ? 'Quem esse cliente indica? Informe 1 pessoa (nome e CPF).' : `Quem mais esse cliente indica? Informe ${nInd} pessoas (nome e CPF).` }),
+      h('p', { class: 'dica', text: nInd === 1 ? 'Ela vira um novo lead para você trabalhar.' : 'Elas viram novos leads para você trabalhar.' }),
       itensInd.map((it) => h('div', { class: 'item' }, it.nome, it.cpf, it.tel, it.erro))));
   const erroGeral = h('div', { class: 'erro', hidden: true, role: 'alert' });
 
   function atualizarCampos() {
     blocoMotivo.hidden = sel.status !== 'perdido';
     blocoRetorno.hidden = sel.status !== 'retornar';
-    textoStatus.textContent = descStatus(sel.status);
+    textoStatus.textContent = descDoLead(sel.status);
     blocoVenda.hidden = sel.status !== 'venda';
   }
   atualizarCampos();
@@ -926,14 +928,15 @@ function abrirFicha(leadId) {
     if (sel.status === 'venda') {
       if (!dataVenda.value) { erroGeral.textContent = 'Informe a data da venda.'; erroGeral.hidden = false; return; }
       upd.vendaEm = dataVenda.value;
-      const v = L.validarIndicacoes(itensInd.map((it) => ({ nome: it.nome.value, cpf: it.cpf.value, telefone: it.tel.value })), lead.cpf);
+      const v = L.validarIndicacoes(itensInd.map((it) => ({ nome: it.nome.value, cpf: it.cpf.value, telefone: it.tel.value })), lead.cpf, nInd);
       if (!v.ok) {
         v.erros.forEach((e, i) => { if (e) { itensInd[i].erro.textContent = e; itensInd[i].erro.hidden = false; } });
-        erroGeral.textContent = `Para fechar a venda, preencha as ${L.TOTAL_INDICACOES} indicações corretamente.`;
+        erroGeral.textContent = nInd === 1 ? 'Para fechar a venda, preencha a indicação corretamente.' : `Para fechar a venda, preencha as ${nInd} indicações corretamente.`;
         erroGeral.hidden = false;
         return;
       }
-      upd.indicacoes = v.itens;
+      // preserva indicações já gravadas além das exigidas (ex.: venda antiga de CNC com 3)
+      upd.indicacoes = [...v.itens, ...(lead.indicacoes || []).slice(nInd)];
       if (!jaTinhaIndic) indicacoesNovas = v.itens;
     }
     const entrada = { em: new Date().toISOString(), por: estado.me.nome, st: sel.status };
@@ -965,7 +968,7 @@ function abrirFicha(leadId) {
       m.fechar();
       if (sel.status === 'venda' && lead.status !== 'venda') celebrarVenda(); // só na virada para Vendido, não ao editar uma venda que já estava fechada
       if (!indicacoesNovas) aviso('Lead atualizado.');
-      else if (!jaExistiam) aviso('Venda registrada. As 3 indicações viraram novos leads.');
+      else if (!jaExistiam) aviso(nInd === 1 ? 'Venda registrada. A indicação virou um novo lead.' : `Venda registrada. As ${nInd} indicações viraram novos leads.`);
       else aviso(`Venda registrada. ${criadas} indicação(ões) viraram leads; ${jaExistiam} já estava(m) na base e não foi(ram) duplicada(s).`);
     } catch (e) {
       console.error('salvar lead', e?.code || e);

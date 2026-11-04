@@ -15,11 +15,24 @@ export const STATUS = [
   { id: 'retornar', nome: 'Retorno agendado', desc: 'O cliente pediu para conversar em outro dia ou horário (ligação ou WhatsApp). Marque o dia e a hora.' },
   { id: 'proposta', nome: 'Proposta enviada', desc: 'Você já mandou a simulação e espera a resposta do cliente.' },
   { id: 'aguardando', nome: 'Aguardando documentos', desc: 'O cliente aceitou e falta enviar documento, assinatura ou link.' },
-  { id: 'venda', nome: 'Vendido', desc: 'Venda concluída. Exige a data da venda e as 3 indicações.' },
+  { id: 'venda', nome: 'Vendido', desc: 'Venda concluída. Exige a data da venda e as indicações do cliente (3; no CNC, 1).' },
   { id: 'perdido', nome: 'Perdido', desc: 'O cliente não vai fechar. Informe o motivo.' },
 ];
 
 export const TOTAL_INDICACOES = 3;
+// Produtos com quantidade própria de indicações obrigatórias na venda (os demais seguem TOTAL_INDICACOES).
+// Se mudar aqui, mude também a regra de venda em firestore.rules.
+export const INDICACOES_POR_PRODUTO = { cnc: 1 };
+export function indicacoesExigidas(produtoId) {
+  return INDICACOES_POR_PRODUTO[produtoId] ?? TOTAL_INDICACOES;
+}
+export function textoIndicacoes(n) {
+  return n === 1 ? '1 indicação' : `${n} indicações`;
+}
+export function descVenda(produtoId) {
+  const n = indicacoesExigidas(produtoId);
+  return `Venda concluída. Exige a data da venda e ${n === 1 ? 'a indicação' : `as ${n} indicações`} do cliente.`;
+}
 export const MAX_EXTRAS = 18;
 
 // ---------- texto ----------
@@ -420,11 +433,11 @@ export function fatiarDistribuicao(leadsPorProduto, plano, ordemAlvos) {
 }
 
 // ---------- indicações ----------
-export function validarIndicacoes(lista, cpfCliente) {
+export function validarIndicacoes(lista, cpfCliente, total = TOTAL_INDICACOES) {
   const erros = [];
   const itens = [];
   const cpfs = new Set([cpfCliente]);
-  for (let i = 0; i < TOTAL_INDICACOES; i++) {
+  for (let i = 0; i < total; i++) {
     const it = lista[i] || {};
     const nome = limparTexto(it.nome).slice(0, 120);
     const cpf = normalizarCpf(it.cpf);
