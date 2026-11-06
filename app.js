@@ -31,7 +31,7 @@ const estado = {
   dist: { modo: 'lojas', loja: '', lote: '', plano: {} },
   rel: { produto: '', lote: '' },
   rank: { produto: '', periodo: 'mes', modo: 'lojas' },
-  cobranca: null, cobrancas: new Map(),
+  cobranca: null, cobrancas: new Map(), nExpirados: 0,
   roteiros: [], rot: { id: null, pagina: 1, busca: '', paginas: null, chave: '', carregando: false, erro: false },
   desinscrever: [], modais: 0, renderPendente: false, timerInatividade: null,
 };
@@ -168,7 +168,7 @@ async function lerArquivoTabela(arquivo) {
 }
 
 // ---------- dados derivados ----------
-const leadsLista = () => (estado.leadsCache ??= [...estado.leadsMap.values()]);
+const leadsLista = () => (estado.leadsCache ??= L.aplicarExpiracao([...estado.leadsMap.values()], estado.produtos));
 const nomeProduto = (id) => estado.produtos.find((p) => p.id === id)?.nome || id;
 const nomeLoja = (id) => estado.lojas.find((l) => l.id === id)?.nome || (id ? id : '—');
 const usuarioPorId = (id) => estado.usuarios.find((u) => u.id === id);
@@ -188,6 +188,7 @@ const dataBr = (iso) => (iso || '').split('-').reverse().join('/');
 // Retorno agendado: data e hora combinadas com o cliente
 const retornoMs = (l) => (l.status === 'retornar' && l.retornarEm ? new Date(`${l.retornarEm}T${l.retornarHora || '00:00'}:00`).getTime() : null);
 function rotuloLead(l) {
+  if (l.status === 'perdido' && l.motivo === L.MOTIVO_EXPIRADO) return `${rotuloStatus('perdido')} · ${L.MOTIVO_EXPIRADO}`;
   const t = retornoMs(l);
   if (t === null) return rotuloStatus(l.status);
   const agora = Date.now();
@@ -457,6 +458,7 @@ function iniciarDados() {
   const me = estado.me;
   ouvir(collection(db, 'produtos'), (s) => {
     estado.produtos = docsComId(s).sort((a, b) => (a.ordem ?? 99) - (b.ordem ?? 99));
+    estado.leadsCache = null; // o limite de expiração vem do produto
     if (ehAdmin() && s.empty) semearProdutos();
     agendarRender();
   });
@@ -535,7 +537,13 @@ function verificarRetornos() {
   if (vencidos.length > 5) aviso(`Mais ${vencidos.length - 5} retornos esperando. Veja em Leads ("Retorno agendado").`);
   if (vencidos.length) apito();
 }
-function tiquePainel() { verificarRetornos(); atualizarFaixa(); atualizarCobranca(); }
+function tiquePainel() {
+  verificarRetornos(); atualizarFaixa(); atualizarCobranca();
+  // com o painel aberto, lead que acabou de passar do prazo de contato vira Perdido (Expirado) sem precisar recarregar
+  estado.leadsCache = null;
+  const n = leadsLista().reduce((t, l) => t + (l.expirado ? 1 : 0), 0);
+  if (n !== estado.nExpirados) { estado.nExpirados = n; agendarRender(); }
+}
 function iniciarLembretes() {
   if (estado.timerLembretes) { tiquePainel(); return; }
   estado.timerLembretes = setInterval(tiquePainel, 20000);
@@ -836,8 +844,9 @@ function exportarLeads(lista) {
 
 // ---------- FICHA DO LEAD ----------
 function abrirFicha(leadId) {
-  const lead = estado.leadsMap.get(leadId);
-  if (!lead) return;
+  const bruto = estado.leadsMap.get(leadId);
+  if (!bruto) return;
+  const lead = L.aplicarExpiracao([bruto], estado.produtos)[0];
   const podeEditar = L.podeEditarLead(estado.me, lead);
   const mascarar = ehDiretor();
   const dados = [['Produto', nomeProduto(lead.produtoId)], ['Origem', lead.origem || '—']];
@@ -854,6 +863,7 @@ function abrirFicha(leadId) {
   for (const [k, v] of Object.entries(lead.extras || {})) dados.push([k, v]);
 
   const corpo = h('div', {}, h('dl', { class: 'dados' }, dados.map(([k, v]) => [h('dt', { text: k }), h('dd', {}, v)])));
+  if (lead.expirado) corpo.append(h('p', { class: 'dica', text: `Expirou sozinho: ficou ${L.horasExpiracao(estado.produtos.find((p) => p.id === lead.produtoId))} horas sem contato. Para retomar, escolha outra situação e salve.` }));
   const histLista = (lead.hist || []).slice(-6).reverse();
   let m;
 
@@ -867,10 +877,8 @@ function abrirFicha(leadId) {
   }
 
   const sel = { status: lead.status };
-  const nInd = L.indicacoesExigidas(lead.produtoId); // CNC: 1 indicação; demais produtos: 3
-  const descDoLead = (id) => (id === 'venda' ? L.descVenda(lead.produtoId) : descStatus(id));
   const botoesStatus = L.STATUS.map((s) => h('button', {
-    type: 'button', 'aria-pressed': String(sel.status === s.id), 'data-status': s.id, 'data-desc': descDoLead(s.id), class: 'dica-card',
+    type: 'button', 'aria-pressed': String(sel.status === s.id), 'data-status': s.id, 'data-desc': s.desc, class: 'dica-card',
     onclick: () => { sel.status = s.id; botoesStatus.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.status === s.id))); atualizarCampos(); },
     text: s.nome,
   }));
@@ -883,8 +891,8 @@ function abrirFicha(leadId) {
   const blocoRetorno = h('div', {}, h('div', { class: 'linha' }, campo('Dia (obrigatório)', dataRetorno), campo('Hora (obrigatório)', horaRetorno)),
     h('p', { class: 'dica', text: 'Na hora marcada o painel mostra um aviso (com o painel aberto no navegador, mesmo em outra aba).' }));
   const textoStatus = h('p', { class: 'dica', 'aria-live': 'polite' });
-  const jaTinhaIndic = (lead.indicacoes || []).length >= nInd;
-  const itensInd = Array.from({ length: nInd }, (_, i) => {
+  const jaTinhaIndic = (lead.indicacoes || []).length >= L.TOTAL_INDICACOES;
+  const itensInd = Array.from({ length: L.TOTAL_INDICACOES }, (_, i) => {
     const ex = (lead.indicacoes || [])[i] || {};
     return {
       nome: h('input', { type: 'text', maxlength: '120', placeholder: 'Nome', 'aria-label': `Indicação ${i + 1}: nome`, value: ex.nome || '' }),
@@ -895,15 +903,15 @@ function abrirFicha(leadId) {
   });
   const blocoVenda = h('div', {},
     campo('Data da venda', dataVenda),
-    h('div', { class: 'indic' }, h('b', { text: nInd === 1 ? 'Quem esse cliente indica? Informe 1 pessoa (nome e CPF).' : `Quem mais esse cliente indica? Informe ${nInd} pessoas (nome e CPF).` }),
-      h('p', { class: 'dica', text: nInd === 1 ? 'Ela vira um novo lead para você trabalhar.' : 'Elas viram novos leads para você trabalhar.' }),
+    h('div', { class: 'indic' }, h('b', { text: `Quem mais esse cliente indica? Informe ${L.TOTAL_INDICACOES} pessoas (nome e CPF).` }),
+      h('p', { class: 'dica', text: 'Elas viram novos leads para você trabalhar.' }),
       itensInd.map((it) => h('div', { class: 'item' }, it.nome, it.cpf, it.tel, it.erro))));
   const erroGeral = h('div', { class: 'erro', hidden: true, role: 'alert' });
 
   function atualizarCampos() {
     blocoMotivo.hidden = sel.status !== 'perdido';
     blocoRetorno.hidden = sel.status !== 'retornar';
-    textoStatus.textContent = descDoLead(sel.status);
+    textoStatus.textContent = descStatus(sel.status);
     blocoVenda.hidden = sel.status !== 'venda';
   }
   atualizarCampos();
@@ -928,15 +936,14 @@ function abrirFicha(leadId) {
     if (sel.status === 'venda') {
       if (!dataVenda.value) { erroGeral.textContent = 'Informe a data da venda.'; erroGeral.hidden = false; return; }
       upd.vendaEm = dataVenda.value;
-      const v = L.validarIndicacoes(itensInd.map((it) => ({ nome: it.nome.value, cpf: it.cpf.value, telefone: it.tel.value })), lead.cpf, nInd);
+      const v = L.validarIndicacoes(itensInd.map((it) => ({ nome: it.nome.value, cpf: it.cpf.value, telefone: it.tel.value })), lead.cpf);
       if (!v.ok) {
         v.erros.forEach((e, i) => { if (e) { itensInd[i].erro.textContent = e; itensInd[i].erro.hidden = false; } });
-        erroGeral.textContent = nInd === 1 ? 'Para fechar a venda, preencha a indicação corretamente.' : `Para fechar a venda, preencha as ${nInd} indicações corretamente.`;
+        erroGeral.textContent = `Para fechar a venda, preencha as ${L.TOTAL_INDICACOES} indicações corretamente.`;
         erroGeral.hidden = false;
         return;
       }
-      // preserva indicações já gravadas além das exigidas (ex.: venda antiga de CNC com 3)
-      upd.indicacoes = [...v.itens, ...(lead.indicacoes || []).slice(nInd)];
+      upd.indicacoes = v.itens;
       if (!jaTinhaIndic) indicacoesNovas = v.itens;
     }
     const entrada = { em: new Date().toISOString(), por: estado.me.nome, st: sel.status };
@@ -968,7 +975,7 @@ function abrirFicha(leadId) {
       m.fechar();
       if (sel.status === 'venda' && lead.status !== 'venda') celebrarVenda(); // só na virada para Vendido, não ao editar uma venda que já estava fechada
       if (!indicacoesNovas) aviso('Lead atualizado.');
-      else if (!jaExistiam) aviso(nInd === 1 ? 'Venda registrada. A indicação virou um novo lead.' : `Venda registrada. As ${nInd} indicações viraram novos leads.`);
+      else if (!jaExistiam) aviso('Venda registrada. As 3 indicações viraram novos leads.');
       else aviso(`Venda registrada. ${criadas} indicação(ões) viraram leads; ${jaExistiam} já estava(m) na base e não foi(ram) duplicada(s).`);
     } catch (e) {
       console.error('salvar lead', e?.code || e);
@@ -1914,6 +1921,8 @@ function viewCadastros() {
   };
   const editar = (colecao, item, rotulo) => {
     const nome = h('input', { type: 'text', maxlength: colecao === 'produtos' ? '40' : '60', value: item.nome });
+    const horasAtuais = L.horasExpiracao(item);
+    const horas = h('input', { type: 'number', min: '0', max: '720', step: '1', inputmode: 'numeric', value: String(horasAtuais) });
     const erro = h('div', { class: 'erro', hidden: true, role: 'alert' });
     const salvar = h('button', { class: 'btn', text: 'Salvar' });
     let m;
@@ -1923,16 +1932,20 @@ function viewCadastros() {
       const outros = colecao === 'produtos' ? estado.produtos : estado.lojas;
       if (n.length < 2) { erro.textContent = `Informe o nome ${rotulo === 'produto' ? 'do produto' : 'da loja'}.`; erro.hidden = false; return; }
       if (outros.some((o) => o.id !== item.id && L.slug(o.nome) === L.slug(n))) { erro.textContent = `Já existe ${rotulo === 'produto' ? 'um produto' : 'uma loja'} com esse nome.`; erro.hidden = false; return; }
-      if (n === item.nome) { m.fechar(); return; }
+      const h2 = Number(horas.value);
+      if (colecao === 'produtos' && (horas.value === '' || !Number.isInteger(h2) || h2 < 0 || h2 > 720)) { erro.textContent = 'Informe as horas com um número de 0 a 720 (0 = não expira).'; erro.hidden = false; return; }
+      if (n === item.nome && (colecao !== 'produtos' || h2 === horasAtuais)) { m.fechar(); return; }
       salvar.disabled = true;
-      try { await updateDoc(doc(db, colecao, item.id), { nome: n }); m.fechar(); aviso('Nome atualizado.'); } catch (e) {
+      try { await updateDoc(doc(db, colecao, item.id), colecao === 'produtos' ? { nome: n, expiraHoras: h2 } : { nome: n }); m.fechar(); aviso(colecao === 'produtos' ? 'Produto atualizado.' : 'Nome atualizado.'); } catch (e) {
         console.error('editar', e?.code || e); erro.textContent = 'Não consegui salvar. Tente de novo.'; erro.hidden = false; salvar.disabled = false;
       }
     });
-    m = abrirModal(`Editar ${rotulo}`, h('div', {}, campo('Nome', nome, 'Só muda o nome que aparece na tela. Os leads e o histórico continuam ligados.'), erro, h('div', { class: 'acoes' }, salvar)));
+    m = abrirModal(`Editar ${rotulo}`, h('div', {}, campo('Nome', nome, 'Só muda o nome que aparece na tela. Os leads e o histórico continuam ligados.'),
+      colecao === 'produtos' ? campo('Expira sem contato (horas)', horas, 'Lead com consultor que ficar "Não contatado" por mais que isso vai para Perdido (Expirado). 0 = não expira.') : null,
+      erro, h('div', { class: 'acoes' }, salvar)));
   };
   const lista = (colecao, itens, rotulo) => h('ul', { style: 'list-style:none;padding:0;margin:12px 0 0' }, itens.map((i) => h('li', { style: 'display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--linha)' },
-    h('span', { style: 'flex:1', text: i.nome }), h('span', { class: `tag ${i.ativo === false ? 'perdido' : 'venda'}`, text: i.ativo === false ? 'Inativo' : 'Ativo' }),
+    h('span', { style: 'flex:1' }, i.nome, colecao === 'produtos' && L.horasExpiracao(i) ? h('small', { class: 'dica', text: ` · expira sem contato em ${L.horasExpiracao(i)} h` }) : null), h('span', { class: `tag ${i.ativo === false ? 'perdido' : 'venda'}`, text: i.ativo === false ? 'Inativo' : 'Ativo' }),
     h('button', { class: 'btn sec peq', onclick: () => editar(colecao, i, rotulo), text: 'Editar' }),
     h('button', { class: 'btn sec peq', onclick: () => alternar(colecao, i), text: i.ativo === false ? 'Ativar' : 'Desativar' }))));
   return h('div', {},

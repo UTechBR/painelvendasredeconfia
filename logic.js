@@ -15,24 +15,11 @@ export const STATUS = [
   { id: 'retornar', nome: 'Retorno agendado', desc: 'O cliente pediu para conversar em outro dia ou horário (ligação ou WhatsApp). Marque o dia e a hora.' },
   { id: 'proposta', nome: 'Proposta enviada', desc: 'Você já mandou a simulação e espera a resposta do cliente.' },
   { id: 'aguardando', nome: 'Aguardando documentos', desc: 'O cliente aceitou e falta enviar documento, assinatura ou link.' },
-  { id: 'venda', nome: 'Vendido', desc: 'Venda concluída. Exige a data da venda e as indicações do cliente (3; no CNC, 1).' },
+  { id: 'venda', nome: 'Vendido', desc: 'Venda concluída. Exige a data da venda e as 3 indicações.' },
   { id: 'perdido', nome: 'Perdido', desc: 'O cliente não vai fechar. Informe o motivo.' },
 ];
 
 export const TOTAL_INDICACOES = 3;
-// Produtos com quantidade própria de indicações obrigatórias na venda (os demais seguem TOTAL_INDICACOES).
-// Se mudar aqui, mude também a regra de venda em firestore.rules.
-export const INDICACOES_POR_PRODUTO = { cnc: 1 };
-export function indicacoesExigidas(produtoId) {
-  return INDICACOES_POR_PRODUTO[produtoId] ?? TOTAL_INDICACOES;
-}
-export function textoIndicacoes(n) {
-  return n === 1 ? '1 indicação' : `${n} indicações`;
-}
-export function descVenda(produtoId) {
-  const n = indicacoesExigidas(produtoId);
-  return `Venda concluída. Exige a data da venda e ${n === 1 ? 'a indicação' : `as ${n} indicações`} do cliente.`;
-}
 export const MAX_EXTRAS = 18;
 
 // ---------- texto ----------
@@ -433,11 +420,11 @@ export function fatiarDistribuicao(leadsPorProduto, plano, ordemAlvos) {
 }
 
 // ---------- indicações ----------
-export function validarIndicacoes(lista, cpfCliente, total = TOTAL_INDICACOES) {
+export function validarIndicacoes(lista, cpfCliente) {
   const erros = [];
   const itens = [];
   const cpfs = new Set([cpfCliente]);
-  for (let i = 0; i < total; i++) {
+  for (let i = 0; i < TOTAL_INDICACOES; i++) {
     const it = lista[i] || {};
     const nome = limparTexto(it.nome).slice(0, 120);
     const cpf = normalizarCpf(it.cpf);
@@ -634,4 +621,41 @@ export function filtrarPorData(leads, { tipo = 'chegada', de = '', ate = '', pap
   if (!de && !ate) return leads;
   const [ini, fim] = de && ate && de > ate ? [ate, de] : [de, ate];
   return leads.filter((l) => { const d = diaDoLead(l, tipo, papel); return d && (!ini || d >= ini) && (!fim || d <= fim); });
+}
+
+// ---------- expiração de lead sem contato ----------
+// Lead que continua "Não contatado" por mais tempo que o limite do produto passa a valer como Perdido (Expirado).
+// É calculado na hora de mostrar (não grava nada): vale para todos os perfis, sem depender de quem está com o painel aberto.
+export const MOTIVO_EXPIRADO = 'Expirado';
+export const EXPIRA_CLT_HORAS = 48;
+
+// Limite do produto em horas (0 = não expira). Sem valor cadastrado, o CLT usa 48 h.
+export function horasExpiracao(produto) {
+  if (!produto) return 0;
+  if (Number.isFinite(produto.expiraHoras)) return Math.max(0, Math.floor(produto.expiraHoras));
+  return semAcento(String(produto.nome || '')).trim().toLowerCase() === 'clt' ? EXPIRA_CLT_HORAS : 0;
+}
+
+// Quando o lead expirou (ms), ou null se não expirou. O relógio começa quando ele chegou ao consultor
+// (passado a ele; sem isso, envio à loja; sem isso, importação). Só expira lead intocado e já com consultor.
+export function expiradoEm(l, horas, agora = Date.now()) {
+  if (!horas || l.status !== 'novo' || !l.consultorId) return null;
+  if (l.atualizadoEm || (l.hist && l.hist.length)) return null;
+  let ms = null;
+  for (const campo of ['atribuidoEm', 'enviadoEm', 'criadoEm']) {
+    if (l[campo] === undefined) continue;
+    ms = msDe(l[campo]) ?? agora; // nulo = gravação acabando de sair daqui: conta como agora
+    break;
+  }
+  if (ms === null) return null;
+  const limite = ms + horas * 3600000;
+  return agora >= limite ? limite : null;
+}
+
+export function aplicarExpiracao(leads, produtos, agora = Date.now()) {
+  const horas = new Map(produtos.map((p) => [p.id, horasExpiracao(p)]));
+  return leads.map((l) => {
+    const limite = expiradoEm(l, horas.get(l.produtoId), agora);
+    return limite === null ? l : { ...l, status: 'perdido', motivo: MOTIVO_EXPIRADO, expirado: true, expiradoEm: limite };
+  });
 }
